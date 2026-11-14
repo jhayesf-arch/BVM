@@ -154,6 +154,19 @@ Notes and limits:
 (relative) on flow, Re, ΔP and WSS across mixed test cases, including tapered, bulbed,
 perforator-scale and branched vessels. Change both together.
 
+## Credibility (verification and validation)
+
+[`docs/credibility-assessment-plan.md`](docs/credibility-assessment-plan.md) applies FDA's 2023
+guidance on computational-model credibility (with ASME V&V 40) to this project. It states the question
+of interest, the context of use and the model risk, and maps evidence to the guidance's eight
+categories with status and next steps. That includes a bench-validation protocol for the blood vessel
+mimic flow loop and proposed credibility goals.
+
+* `tests/test_verification.py` is the code verification against exact solutions and convergence order.
+* `python -m bvm verify` regenerates [`docs/verification-results.md`](docs/verification-results.md),
+  which has the grid convergence index for each endpoint and a Monte Carlo uncertainty propagation
+  with sensitivities.
+
 ## Python engine (batch runs and scripting)
 
 The same model is available as the `bvm` Python package. Use it for scripted parameter studies and

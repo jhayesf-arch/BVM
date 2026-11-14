@@ -101,7 +101,17 @@ def main(argv: list[str] | None = None) -> None:
                     choices=["diameter_mm", "tortuosity", "occlusion_pct", "stiffness_kpa"])
     sw.add_argument("--values", required=True, help="start:stop:step or comma list, e.g. 0:90:10")
     sw.add_argument("--out", type=Path, default=Path("results/sweep"))
+    ver = sub.add_parser("verify", help="grid convergence (GCI) + Monte Carlo UQ report for the credibility plan")
+    ver.add_argument("--samples", type=int, default=400)
+    ver.add_argument("--out", type=Path, default=Path("docs/verification-results.md"))
     a = ap.parse_args(argv)
+
+    if a.cmd == "verify":
+        from .credibility import report
+        a.out.parent.mkdir(parents=True, exist_ok=True)
+        a.out.write_text(report(a.samples))
+        print(f"wrote {a.out}")
+        return
 
     vessel, blood, flow = _build(a)
     a.out.mkdir(parents=True, exist_ok=True)
