@@ -45,6 +45,11 @@ class Vessel:
     wall_thickness_mm: float = 0.3
     # Arc-length span (mm) held non-distensible, e.g. a segment scaffolded by an implanted stent.
     rigid_span_mm: tuple[float, float] | None = None
+    # Anatomy (healthy shape, kept in the territory reference vessel):
+    taper: float = 1.0              # outlet / inlet unloaded diameter, linear along arc length
+    bulb_pct: float = 0.0           # peak local dilation, % of the local diameter (e.g. carotid bulb)
+    bulb_center: float = 0.5        # bulb location, fraction of arc length
+    bulb_length_mm: float = 8.0     # axial length of the cosine-shaped dilation
 
     def __post_init__(self) -> None:
         if self.diameter_mm <= 0 or self.length_mm <= 0:
@@ -61,6 +66,13 @@ class Vessel:
         center = self.stenosis_center * self.length_mm
         if self.occlusion_pct > 0 and (center - half < 0 or center + half > self.length_mm):
             raise ValueError("stenosis extends past the ends of the vessel")
+        if not 0.2 <= self.taper <= 2.0:
+            raise ValueError("taper (outlet/inlet diameter) must be in [0.2, 2]")
+        if not 0.0 <= self.bulb_pct <= 150.0:
+            raise ValueError("bulb_pct must be in [0, 150]")
+        bh, bc = self.bulb_length_mm / 2, self.bulb_center * self.length_mm
+        if self.bulb_pct > 0 and (bc - bh < -1e-9 or bc + bh > self.length_mm + 1e-9):
+            raise ValueError("bulb extends past the ends of the vessel")
 
     @property
     def throat_radius_ratio(self) -> float:
@@ -99,6 +111,9 @@ class FlowConditions:
     external_pressure_mmhg: float = 0.0   # pressure outside the wall (0 for a bench BVM, ~ICP in vivo)
     heart_rate_bpm: float = 70.0          # only used for the Womersley number
     bc: str = "fixed_flow"
+    # Pressure lost upstream of the inlet (systemic hypotension, proximal disease). The territory
+    # resistance is still calibrated at inlet_pressure_mmhg, so this lowers perfusion.
+    inlet_drop_mmhg: float = 0.0
 
     def __post_init__(self) -> None:
         if self.bc not in ("fixed_flow", "territory"):
@@ -107,3 +122,5 @@ class FlowConditions:
             raise ValueError("flow_ml_min must be positive")
         if self.inlet_pressure_mmhg <= self.outflow_pressure_mmhg:
             raise ValueError("inlet pressure must exceed outflow pressure")
+        if self.inlet_drop_mmhg < 0 or self.inlet_pressure_mmhg - self.inlet_drop_mmhg <= self.outflow_pressure_mmhg:
+            raise ValueError("inlet_drop_mmhg must be >= 0 and leave the inlet above the outflow pressure")

@@ -114,3 +114,30 @@ def test_flow_regime_labels():
 def test_invalid_inputs(kw):
     with pytest.raises(ValueError):
         Vessel(**kw)
+
+
+def test_taper_and_bulb_shape_the_healthy_lumen():
+    g = build_geometry(Vessel(diameter_mm=6.0, length_mm=40.0, taper=0.8, bulb_pct=30.0,
+                              bulb_center=0.35, bulb_length_mm=15.0))
+    d = 2e3 * g.radius
+    assert d[0] == pytest.approx(6.0) and d[-1] == pytest.approx(4.8)
+    i = int(np.argmin(np.abs(g.s * 1e3 - 14.0)))
+    assert d[i] == pytest.approx(6.0 * (1 - 0.2 * 0.35) * 1.3, rel=1e-3)
+    assert np.allclose(g.radius, g.base_radius)
+
+
+def test_stenosis_in_tapered_vessel_is_relative_to_local_diameter():
+    v = Vessel(diameter_mm=3.0, taper=0.5, occlusion_pct=50, stenosis_center=0.25)
+    g = build_geometry(v)
+    i = g.throat_index
+    assert g.s[i] * 1e3 == pytest.approx(5.0, abs=0.06)
+    assert g.radius[i] / g.base_radius[i] == pytest.approx(0.5, rel=1e-6)
+
+
+def test_inlet_drop_lowers_territory_flow_like_a_pressure_ratio():
+    rigid = Vessel(stiffness_kpa=RIGID)
+    full = solve(rigid, flow=FlowConditions(bc="territory"))
+    low = solve(rigid, flow=FlowConditions(bc="territory", inlet_drop_mmhg=25))
+    assert full.summary()["perfusion"]["territory_flow_fraction"] == pytest.approx(1.0, rel=1e-6)
+    # linear (Poiseuille + fixed distal resistance): flow scales with (Pin - drop - Pout)/(Pin - Pout)
+    assert low.summary()["perfusion"]["territory_flow_fraction"] == pytest.approx(50 / 75, rel=1e-6)

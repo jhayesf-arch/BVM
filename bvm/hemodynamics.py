@@ -76,7 +76,7 @@ class VesselSolution:
 
     def summary(self) -> dict:
         b, v, fl = self.blood, self.vessel, self.flow
-        i_t = int(np.argmin(self.radius))
+        i_t = self.geometry.throat_index if v.occlusion_pct > 0 else int(np.argmin(self.radius))
         d_in = 2 * self.radius[0]
         re_in, re_throat, re_max = float(self.reynolds[0]), float(self.reynolds[i_t]), float(self.reynolds.max())
         omega = 2 * math.pi * fl.heart_rate_bpm / 60.0
@@ -90,7 +90,10 @@ class VesselSolution:
                 "stiffness_kpa": v.stiffness_kpa if not v.is_rigid else "rigid",
                 "length_mm": v.length_mm,
                 "wall_thickness_mm": v.wall_thickness_mm,
+                "taper": v.taper,
+                "bulb_pct": v.bulb_pct,
                 "boundary_condition": fl.bc,
+                "inlet_drop_mmHg": fl.inlet_drop_mmhg,
             },
             "blood": {"mu_Pa_s": b.mu, "rho_kg_m3": b.rho, "nu_m2_s": b.nu},
             "flow": {
@@ -171,7 +174,8 @@ def _solve_at_flow(geom: VesselGeometry, blood: Blood, fl: FlowConditions, q: fl
     mu, rho = blood.mu, blood.rho
     p_ext = fl.external_pressure_mmhg * MMHG_TO_PA
     eh = math.inf if v.is_rigid else v.stiffness_kpa * 1e3 * v.wall_thickness_mm * 1e-3
-    i_t = int(np.argmin(r0))
+    i_t = geom.throat_index
+    base_ratio = (geom.base_radius[i_t] / geom.base_radius[0]) ** 2
     sc = v.stenosis_center * v.length_mm * 1e-3
     s_end = sc + v.stenosis_length_mm / 2 * 1e-3
 
@@ -185,7 +189,8 @@ def _solve_at_flow(geom: VesselGeometry, blood: Blood, fl: FlowConditions, q: fl
         dp = cumulative_trapezoid(8 * mu * q / (np.pi * r**4) * fc, s, initial=0.0)
         if v.occlusion_pct > 0:
             # Young–Tsai expansion loss, spread over the diverging half of the stenosis.
-            a0, a1 = area[0], area[i_t]
+            # upstream area = healthy local area at the throat (equals the inlet for a uniform tube)
+            a0, a1 = area[0] * base_ratio, area[i_t]
             loss = YOUNG_TSAI_KT * rho / 2 * (q / a0) ** 2 * (a0 / a1 - 1.0) ** 2
             ramp = np.clip((s - s[i_t]) / max(s_end - s[i_t], 1e-12), 0.0, 1.0)
             dp = dp + loss * ramp
@@ -230,12 +235,14 @@ def solve(vessel: Vessel, blood: Blood | None = None, flow: FlowConditions | Non
     """Solve the vessel. See FlowConditions for the two boundary-condition modes.
 
     For bc="territory" the distal resistance is calibrated on ``reference``
-    (default: the same vessel, straight and unoccluded) carrying flow_ml_min.
+    (default: the same vessel, straight and unoccluded, keeping its taper and bulb)
+    carrying flow_ml_min at the undropped inlet pressure.
     """
     blood = blood or Blood()
     flow = flow or FlowConditions()
     geom = build_geometry(vessel, n)
-    p_in = flow.inlet_pressure_mmhg * MMHG_TO_PA
+    p_cal = flow.inlet_pressure_mmhg * MMHG_TO_PA                 # calibration (healthy) inlet pressure
+    p_in = (flow.inlet_pressure_mmhg - flow.inlet_drop_mmhg) * MMHG_TO_PA  # actual inlet pressure
     q0 = flow.flow_ml_min * ML_MIN_TO_M3_S
 
     if flow.bc == "fixed_flow":
@@ -243,7 +250,7 @@ def solve(vessel: Vessel, blood: Blood | None = None, flow: FlowConditions | Non
 
     p_out = flow.outflow_pressure_mmhg * MMHG_TO_PA
     ref_geom = build_geometry(reference or _reference_vessel(vessel), n)
-    ref = _solve_at_flow(ref_geom, blood, flow, q0, p_in)
+    ref = _solve_at_flow(ref_geom, blood, flow, q0, p_cal)
     r_distal = (ref.pressure[-1] - p_out) / q0
     if r_distal <= 0:
         raise ValueError("reference vessel alone drops more pressure than is available; check pressures")

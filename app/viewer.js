@@ -163,6 +163,8 @@ export class Viewer {
     this.wallGeom.computeBoundingSphere();
 
     this.vMax = Math.max(...res.velocity) * 2; // centerline peak of the parabolic profile
+    // particle size follows the vessel so a 0.4 mm perforator and a 6 mm carotid both read clearly
+    this.particles.material.size = Math.min(0.2, Math.max(0.012, 0.13 * (Math.max(...res.radius) * 1e3) / 1.5));
     if (reframe) this.frame();
   }
 
@@ -266,7 +268,8 @@ export class Viewer {
     const f = Math.min(Math.max(sMm * 1e-3 / L, 0), 1) * (n - 1);
     const i = Math.min(Math.floor(f), n - 2), t = f - i;
     const lerp = (a) => a[i] * (1 - t) + a[i + 1] * t;
-    return { p: [lerp(g.points.x), lerp(g.points.y), lerp(g.points.z)], N: g.N[i], B: g.B[i], r: lerp(res.radius), r0: lerp(g.radius), i };
+    return { p: [lerp(g.points.x), lerp(g.points.y), lerp(g.points.z)], N: g.N[i], B: g.B[i], r: lerp(res.radius), r0: lerp(g.radius),
+      rb: lerp(g.base ?? g.radius), i };
   }
 
   _pt(fr, rad, th, ds = 0) {
@@ -316,8 +319,9 @@ export class Viewer {
 
     // lesion body: annulus between the narrowed lumen and the normal wall
     if (lesion) {
-      const r0 = Math.max(...g.radius);
-      const inLesion = Array.from(g.radius, (r) => r < r0 * 0.985);
+      // narrowing is measured against the local healthy radius, so taper and bulbs are not drawn as plaque
+      const base = g.base ?? g.radius;
+      const inLesion = Array.from(g.radius, (r, i) => r < base[i] * 0.985);
       const i0 = inLesion.indexOf(true), i1 = inLesion.lastIndexOf(true);
       if (i0 >= 0) {
         const aMm = g.s[i0] * 1e3, bMm = g.s[i1] * 1e3;
@@ -325,9 +329,10 @@ export class Viewer {
           color: lesion === "thrombus" ? 0x8a1020 : 0xd8b45a, roughness: lesion === "thrombus" ? 0.35 : 0.8,
           transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: true,
         });
-        const outerR = () => rNormLoaded * 0.995;
-        this.extras.add(this._tube(aMm, bMm, outerR, mat));
-        this.extras.add(this._tube(aMm, bMm, (s, fr) => Math.min(fr.r * 1.015, rNormLoaded * 0.99), mat));
+        // loaded healthy radius ≈ base radius × local wall stretch (r / r0)
+        const healthy = (fr) => fr.rb * (fr.r / fr.r0);
+        this.extras.add(this._tube(aMm, bMm, (s, fr) => healthy(fr) * 0.995, mat));
+        this.extras.add(this._tube(aMm, bMm, (s, fr) => Math.min(fr.r * 1.015, healthy(fr) * 0.99), mat));
       }
     }
 

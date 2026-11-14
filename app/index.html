@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>BVM · Interactive MCA Vessel Simulator</title>
+  <title>BVM · Interactive Cerebral Vessel Simulator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
@@ -21,7 +21,7 @@
     <div class="brand">
       <span class="logo" aria-hidden="true"></span>
       <div>
-        <h1>MCA Vessel Simulator</h1>
+        <h1>Cerebral Vessel Simulator</h1>
         <p>Blood-vessel-mimic companion model · ischemic disease</p>
       </div>
     </div>
@@ -47,6 +47,43 @@
   <main class="layout">
     <!-- ───────── Left: controls ───────── -->
     <aside class="panel controls" aria-label="Model inputs">
+      <div class="side-tabs" role="tablist" aria-label="Input groups">
+        <button role="tab" class="active" data-side="pathology" aria-selected="true">Pathology</button>
+        <button role="tab" data-side="anatomy" aria-selected="false">Anatomy <span class="mono muted" id="side-section"></span></button>
+      </div>
+
+      <div class="side-body" data-side-body="anatomy" hidden>
+        <section>
+          <h2>Anatomical section</h2>
+          <div class="sections" id="sections" role="radiogroup" aria-label="Anatomical section"></div>
+          <p class="hint" id="section-why"></p>
+        </section>
+        <section>
+          <h2>Geometry source</h2>
+          <select id="geom-source" class="full" aria-label="Geometry source"></select>
+          <table class="basis" id="geom-basis"></table>
+          <p class="hint">
+            <span class="kind measured">measured</span> taken from the cited study ·
+            <span class="kind derived">derived</span> computed from measured values ·
+            <span class="kind assumed">assumed</span> our choice. Edit any of them below.
+          </p>
+        </section>
+        <section>
+          <h2>Shape</h2>
+          <div id="shape"></div>
+        </section>
+        <section>
+          <h2>Section scenarios</h2>
+          <div class="scenario-btns" id="section-scenarios"></div>
+          <p class="hint" id="section-note"></p>
+        </section>
+        <section>
+          <h2>References</h2>
+          <ul class="srcs hint" id="section-refs"></ul>
+        </section>
+      </div>
+
+      <div class="side-body" data-side-body="pathology">
       <section>
         <h2>Pathology factors</h2>
         <div id="factors"></div>
@@ -86,6 +123,7 @@
         <label class="check"><input type="checkbox" id="particles" checked /> Animate blood flow</label>
         <label class="check"><input type="checkbox" id="lock-scale" /> Lock color scale (compare cases)</label>
       </section>
+      </div>
     </aside>
 
     <!-- ───────── Center: viewport + charts ───────── -->
@@ -154,7 +192,36 @@
 
     <!-- ───────── Right: results ───────── -->
     <aside class="panel results" aria-label="Results" aria-live="polite">
-      <section class="card hero">
+      <section class="card hero restore" id="restore-card">
+        <div class="card-head">
+          <h2>Flow restoration</h2>
+          <span class="info" title="Territory flow before and after the selected device, as a share of the healthy reference flow for this section. 'Restored' is the share of the flow deficit recovered: (after − before) ÷ (healthy − before). This is volumetric flow in this vessel, not an angiographic eTICI grade; no collaterals or autoregulation are modeled.">ⓘ</span>
+        </div>
+        <div class="restore-grid">
+          <div>
+            <div class="label">Before</div>
+            <div class="big mono" id="flow-before">—</div>
+            <div class="mono muted" id="frac-before">—</div>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div>
+            <div class="label">After <span id="after-dev" class="muted"></span></div>
+            <div class="big mono" id="flow-after">—</div>
+            <div class="mono muted" id="frac-after">—</div>
+          </div>
+        </div>
+        <div class="meter dual"><div class="meter-fill after" id="meter-after"></div><div class="meter-fill before" id="meter-before"></div>
+          <div class="tick" style="left:20%"></div><div class="tick" style="left:40%"></div><div class="tick" style="left:80%"></div>
+        </div>
+        <div class="meter-labels"><span>core</span><span>penumbra</span><span>oligemia</span><span>normal</span></div>
+        <div class="restore-foot">
+          <span class="badge" id="restored">—</span>
+          <span class="badge" id="band">—</span>
+        </div>
+        <p class="note" id="restore-note"></p>
+      </section>
+
+      <section class="card">
         <div class="card-head">
           <h2>Reynolds number</h2>
           <span class="info" title="Re = ρVD/μ, the ratio of inertial to viscous forces. Pipe-flow criteria: laminar below 2000, transitional 2000–4000, turbulent at 4000 and above.">ⓘ</span>
@@ -180,23 +247,6 @@
         <p class="note" id="re-note"></p>
       </section>
 
-      <section class="card" id="perfusion-card">
-        <div class="card-head">
-          <h2>Distal perfusion</h2>
-          <span class="info" title="Brain-territory mode: inlet pressure is fixed and the vessel drains into a lumped resistance calibrated so a healthy straight vessel carries the reference flow. No autoregulation or collaterals, so these bands are heuristic, not infarct predictions.">ⓘ</span>
-        </div>
-        <div class="perf-row">
-          <div class="big mono" id="flow">—</div>
-          <div class="perf-side">
-            <div class="mono" id="flow-frac">—</div>
-            <span class="badge" id="band">—</span>
-          </div>
-        </div>
-        <div class="meter"><div class="meter-fill" id="flow-meter"></div>
-          <div class="tick" style="left:20%"></div><div class="tick" style="left:40%"></div><div class="tick" style="left:80%"></div>
-        </div>
-        <div class="meter-labels"><span>core</span><span>penumbra</span><span>oligemia</span><span>normal</span></div>
-      </section>
 
       <section class="card">
         <h2>Hemodynamics</h2>

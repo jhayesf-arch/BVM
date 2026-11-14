@@ -25,11 +25,19 @@ class Centerline:
 class VesselGeometry:
     vessel: Vessel
     centerline: Centerline
-    radius: np.ndarray     # unloaded lumen radius, m (N,)
+    radius: np.ndarray       # unloaded lumen radius, m (N,)
+    base_radius: np.ndarray  # healthy (pre-stenosis) radius incl. taper and bulb, m (N,)
 
     @property
     def s(self) -> np.ndarray:
         return self.centerline.s
+
+    @property
+    def throat_index(self) -> int:
+        """Station of the stenosis throat (deepest narrowing relative to the healthy shape)."""
+        if self.vessel.occlusion_pct > 0:
+            return int(np.argmin(self.radius / self.base_radius))
+        return int(np.argmin(self.radius))
 
 
 def _sinusoid_arc_length(chord: float, amp: float, waves: float, n: int = 20000) -> float:
@@ -84,23 +92,37 @@ def build_centerline(v: Vessel, n: int = 401) -> Centerline:
     return Centerline(s, points, tangent, normal, binormal, curvature)
 
 
+def _cosine_bump(s: np.ndarray, center: float, half: float) -> np.ndarray:
+    xi = (s - center) / half
+    return np.where(np.abs(xi) < 1.0, 0.5 * (1.0 + np.cos(np.pi * np.clip(xi, -1, 1))), 0.0)
+
+
+def base_radius_profile(v: Vessel, s: np.ndarray) -> np.ndarray:
+    """Healthy lumen radius: inlet diameter, linear taper, optional cosine bulb (no stenosis)."""
+    L = v.length_mm * 1e-3
+    r = v.diameter_mm / 2 * 1e-3 * (1.0 + (v.taper - 1.0) * s / L)
+    if v.bulb_pct > 0:
+        r = r * (1.0 + v.bulb_pct / 100 * _cosine_bump(s, v.bulb_center * L, v.bulb_length_mm / 2 * 1e-3))
+    return r
+
+
 def radius_profile(v: Vessel, s: np.ndarray) -> np.ndarray:
-    """Unloaded lumen radius with a smooth cosine-shaped stenosis."""
-    r0 = v.diameter_mm / 2 * 1e-3
-    r = np.full_like(s, r0)
+    """Unloaded lumen radius: healthy shape with a smooth cosine-shaped stenosis.
+
+    The stenosis percentage is relative to the local healthy diameter (in a bulb this
+    is ECST-like, i.e. against the local bulb, not the distal ICA).
+    """
+    r = base_radius_profile(v, s)
     if v.occlusion_pct > 0:
-        sc = v.stenosis_center * v.length_mm * 1e-3
-        half = v.stenosis_length_mm / 2 * 1e-3
-        xi = (s - sc) / half
-        m = np.abs(xi) < 1.0
         depth = 1.0 - v.throat_radius_ratio
-        r[m] = r0 * (1.0 - depth * 0.5 * (1.0 + np.cos(np.pi * xi[m])))
+        bump = _cosine_bump(s, v.stenosis_center * v.length_mm * 1e-3, v.stenosis_length_mm / 2 * 1e-3)
+        r = r * (1.0 - depth * bump)
     return r
 
 
 def build_geometry(v: Vessel, n: int = 401) -> VesselGeometry:
     cl = build_centerline(v, n)
-    return VesselGeometry(v, cl, radius_profile(v, cl.s))
+    return VesselGeometry(v, cl, radius_profile(v, cl.s), base_radius_profile(v, cl.s))
 
 
 @dataclass
