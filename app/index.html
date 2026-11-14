@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BVM · Interactive MCA Vessel Simulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1>MCA Vessel Simulator</h1>
+        <p>Blood-vessel-mimic companion model · ischemic disease</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <label class="select-wrap">
+        <span>Scenario</span>
+        <select id="preset"></select>
+      </label>
+      <button id="reset" class="btn ghost" title="Back to the healthy M1 baseline">Reset</button>
+      <div class="menu">
+        <button class="btn" id="export-btn" aria-haspopup="true" aria-expanded="false">Export ▾</button>
+        <div class="menu-list" id="export-menu" hidden>
+          <button data-export="stl">3D geometry (.stl, mm)</button>
+          <button data-export="csv">Axial profiles (.csv)</button>
+          <button data-export="json">Inputs + results (.json)</button>
+          <button data-export="png">Viewport image (.png)</button>
+          <button data-export="link">Copy shareable link</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- ───────── Left: controls ───────── -->
+    <aside class="panel controls" aria-label="Model inputs">
+      <section>
+        <h2>Pathology factors</h2>
+        <div id="factors"></div>
+      </section>
+
+      <section>
+        <h2>Boundary condition</h2>
+        <div class="segmented" role="radiogroup" id="bc">
+          <button role="radio" data-value="territory">Brain territory</button>
+          <button role="radio" data-value="fixed_flow">Fixed flow</button>
+        </div>
+        <p class="hint" id="bc-hint"></p>
+        <div id="bc-controls"></div>
+      </section>
+
+      <details>
+        <summary>Advanced geometry &amp; blood</summary>
+        <div id="advanced"></div>
+      </details>
+
+      <section>
+        <h2>Display</h2>
+        <label class="field-row">
+          <span>Color vessel by</span>
+          <select id="field">
+            <option value="wss">Wall shear stress</option>
+            <option value="pressure">Pressure</option>
+            <option value="velocity">Mean velocity</option>
+            <option value="reynolds">Reynolds number</option>
+            <option value="strain">Wall strain</option>
+          </select>
+        </label>
+        <label class="field-row">
+          <span>Wall opacity</span>
+          <input type="range" id="opacity" min="0.1" max="1" step="0.05" value="0.45" />
+        </label>
+        <label class="check"><input type="checkbox" id="particles" checked /> Animate blood flow</label>
+        <label class="check"><input type="checkbox" id="lock-scale" /> Lock color scale (compare cases)</label>
+      </section>
+    </aside>
+
+    <!-- ───────── Center: viewport + charts ───────── -->
+    <section class="center">
+      <div class="viewport" id="viewport">
+        <div class="vp-overlay top-left">
+          <div class="pill" id="regime-pill">—</div>
+          <div class="pill subtle" id="motion-pill"></div>
+        </div>
+        <div class="vp-overlay right legend">
+          <div class="legend-title" id="legend-title">WSS (Pa)</div>
+          <div class="legend-body">
+            <div class="legend-bar" id="legend-bar"></div>
+            <div class="legend-ticks" id="legend-ticks"></div>
+          </div>
+        </div>
+        <div class="vp-overlay bottom probe-bar">
+          <span>Probe</span>
+          <input type="range" id="probe" min="0" max="1" step="0.0025" value="0.5" aria-label="Probe position along the vessel" />
+          <span class="mono" id="probe-s">10.0 mm</span>
+        </div>
+        <div class="vp-overlay flow-arrow" aria-hidden="true">flow →</div>
+        <div class="vp-error" id="vp-error" hidden></div>
+      </div>
+
+      <div class="charts panel">
+        <div class="tabs" role="tablist">
+          <button role="tab" class="active" data-tab="profiles">Along the vessel</button>
+          <button role="tab" data-tab="sensitivity">Sensitivity</button>
+          <span class="tab-hint" id="tab-hint">Click or drag a chart to move the probe</span>
+        </div>
+        <div class="tab-body" data-body="profiles">
+          <canvas class="chart" id="c-diam"></canvas>
+          <canvas class="chart" id="c-pres"></canvas>
+          <canvas class="chart" id="c-re"></canvas>
+          <canvas class="chart" id="c-wss"></canvas>
+        </div>
+        <div class="tab-body sens" data-body="sensitivity" hidden>
+          <div class="sens-controls">
+            <label>Vary <select id="sens-x"></select></label>
+            <label>Show <select id="sens-y"></select></label>
+            <p class="hint">All other inputs stay at their current values. The dot is the current configuration.</p>
+          </div>
+          <canvas class="chart" id="c-sens"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- ───────── Right: results ───────── -->
+    <aside class="panel results" aria-label="Results" aria-live="polite">
+      <section class="card hero">
+        <div class="card-head">
+          <h2>Reynolds number</h2>
+          <span class="info" title="Re = ρVD/μ, the ratio of inertial to viscous forces. Pipe-flow criteria: laminar below 2000, transitional 2000–4000, turbulent at 4000 and above.">ⓘ</span>
+        </div>
+        <div class="re-grid">
+          <div>
+            <div class="label">Inlet</div>
+            <div class="big mono" id="re-in">—</div>
+            <span class="badge" id="re-in-badge">—</span>
+          </div>
+          <div>
+            <div class="label">Stenosis throat</div>
+            <div class="big mono" id="re-throat">—</div>
+            <span class="badge" id="re-throat-badge">—</span>
+          </div>
+        </div>
+        <div class="re-scale" id="re-scale" aria-hidden="true">
+          <div class="zone lam"></div><div class="zone trans"></div><div class="zone turb"></div>
+          <div class="marker in" id="re-mark-in" title="Inlet"></div>
+          <div class="marker thr" id="re-mark-thr" title="Throat"></div>
+        </div>
+        <div class="re-scale-labels"><span>10</span><span>100</span><span>1k</span><span>2k</span><span>4k</span><span>10k</span></div>
+        <p class="note" id="re-note"></p>
+      </section>
+
+      <section class="card" id="perfusion-card">
+        <div class="card-head">
+          <h2>Distal perfusion</h2>
+          <span class="info" title="Brain-territory mode: inlet pressure is fixed and the vessel drains into a lumped resistance calibrated so a healthy straight vessel carries the reference flow. No autoregulation or collaterals, so these bands are heuristic, not infarct predictions.">ⓘ</span>
+        </div>
+        <div class="perf-row">
+          <div class="big mono" id="flow">—</div>
+          <div class="perf-side">
+            <div class="mono" id="flow-frac">—</div>
+            <span class="badge" id="band">—</span>
+          </div>
+        </div>
+        <div class="meter"><div class="meter-fill" id="flow-meter"></div>
+          <div class="tick" style="left:20%"></div><div class="tick" style="left:40%"></div><div class="tick" style="left:80%"></div>
+        </div>
+        <div class="meter-labels"><span>core</span><span>penumbra</span><span>oligemia</span><span>normal</span></div>
+      </section>
+
+      <section class="card">
+        <h2>Hemodynamics</h2>
+        <dl class="metrics" id="metrics"></dl>
+      </section>
+
+      <section class="card">
+        <h2>At probe <span class="mono muted" id="probe-head"></span></h2>
+        <dl class="metrics" id="probe-metrics"></dl>
+      </section>
+
+      <section class="card warn" id="warnings-card" hidden>
+        <h2>Model notes</h2>
+        <ul id="warnings"></ul>
+      </section>
+
+      <p class="disclaimer">
+        Reduced-order steady model: Poiseuille flow at each station, Dean curvature correction, a Young–Tsai
+        stenosis loss and a thin-wall elastic lumen. Good for exploring trends; export the STL for full 3D CFD.
+      </p>
+    </aside>
+  </main>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
