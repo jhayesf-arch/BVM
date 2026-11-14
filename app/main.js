@@ -1097,7 +1097,7 @@ async function renderPatient() {
     return;
   }
   const list = $("#pt-variants");
-  if (!list.children.length) {
+  if (list && !list.children.length) {
     const groups = [["Baseline", ["healthy"]], ["Occluded", ["occluded_icas70", "occluded_thrombus95"]],
       ["Recanalized (prescribed outcome)", ["recanalized_thrombectomy", "recanalized_angioplasty", "recanalized_stent"]]];
     const by = Object.fromEntries(ptManifest.variants.map((v) => [v.key, v]));
@@ -1107,7 +1107,7 @@ async function renderPatient() {
         `<small>${esc(detail)}</small></button>`;
     }).join("")).join("");
   }
-  list.querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.key === ptVariant));
+  list?.querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.key === ptVariant));
   $("#pt-subject").textContent = ptManifest.subject;
   $("#pt-color").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === ptColor));
   // WSS scale fixed to the healthy lumen's range (floor 5 Pa) so lesions read as hot, not rescaled away
@@ -1174,11 +1174,13 @@ async function exportPatient(kind) {
   return false;
 }
 
+// Null-safe: for ~10 min after a release GitHub Pages can serve a cached index.html with a newer main.js
+// (or the reverse). A missing element must degrade that control, not stop the app from starting.
 function wirePatient() {
-  $("#geom-mode").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b && b.dataset.value !== geomMode) setGeomMode(b.dataset.value); });
-  $("#pt-variants").addEventListener("click", (e) => { const b = e.target.closest("button[data-key]"); if (b) { ptVariant = b.dataset.key; renderPatient(); } });
-  $("#pt-color").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { ptColor = b.dataset.value; renderPatient(); } });
-  $("#pt-table").addEventListener("click", (e) => { const r = e.target.closest("tr[data-key]"); if (r) { ptVariant = r.dataset.key; renderPatient(); } });
+  $("#geom-mode")?.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b && b.dataset.value !== geomMode) setGeomMode(b.dataset.value); });
+  $("#pt-variants")?.addEventListener("click", (e) => { const b = e.target.closest("button[data-key]"); if (b) { ptVariant = b.dataset.key; renderPatient(); } });
+  $("#pt-color")?.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { ptColor = b.dataset.value; renderPatient(); } });
+  $("#pt-table")?.addEventListener("click", (e) => { const r = e.target.closest("tr[data-key]"); if (r) { ptVariant = r.dataset.key; renderPatient(); } });
 }
 
 // ───────────────────────── wiring ─────────────────────────
