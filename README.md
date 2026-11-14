@@ -111,6 +111,14 @@ Notes and limits:
   ECST-like, not NASCET.
 * **Bulb flow needs 3D CFD.** Flow separation and recirculation in the bulb are not captured by
   this model. Export the STL for 3D CFD.
+* **Patient CTA mode (toggle at the top).** This shows a real MCA bifurcation, healthy control
+  AHMU1218142 from the CMHA dataset (Song et al. 2024, CC BY), in six versions: healthy, 70% plaque,
+  95% thrombus, and after thrombectomy, angioplasty and stenting.
+  * Color the surface by patch, by measured lumen diameter, or by a 1D wall-shear estimate.
+  * The charts show diameter, pressure, Reynolds number and WSS along the patient's M1, and a card
+    compares each version's predicted distal flow and flow restored.
+  * The surfaces are the CFD-ready files from `docs/cfd-variants-AHMU1218142.md`
+    (`app/data/patient/`, about 6.4 MB). Export gives that version's STL.
 * **Export:** STL (mm, with wall/inlet/outlet patches), CSV profiles, JSON, PNG, and a shareable link.
   The link encodes the current settings in the URL.
 

@@ -26,7 +26,11 @@
       </div>
     </div>
     <div class="top-actions">
-      <label class="select-wrap">
+      <div class="segmented small geom-mode" id="geom-mode" role="radiogroup" aria-label="Geometry">
+        <button role="radio" data-value="parametric" title="Idealized vessel built from the sliders">Parametric</button>
+        <button role="radio" data-value="patient" title="Patient MCA bifurcation from CTA (CMHA dataset, CC BY)">Patient CTA</button>
+      </div>
+      <label class="select-wrap param-only">
         <span>Scenario</span>
         <select id="preset"></select>
       </label>
@@ -129,7 +133,7 @@
     <!-- ───────── Center: viewport + charts ───────── -->
     <section class="center">
       <div class="viewport" id="viewport">
-        <div class="vp-overlay top-left">
+        <div class="vp-overlay top-left param-only">
           <div class="device-bar" role="toolbar" aria-label="Device">
             <div class="segmented tiny" id="lesion" role="radiogroup" aria-label="Lesion type">
               <button role="radio" data-value="icas" title="Chronic intracranial atherosclerotic stenosis (ICAS)">Plaque</button>
@@ -146,7 +150,21 @@
           </div>
           <div class="pill" id="regime-pill">—</div>
         </div>
-        <section class="device-panel" id="device-panel" hidden aria-label="Device details"></section>
+        <section class="device-panel param-only" id="device-panel" hidden aria-label="Device details"></section>
+        <section class="patient-panel patient-only" id="patient-panel" aria-label="Patient geometry">
+          <div class="pt-head"><h3>Patient MCA · <span id="pt-subject"></span></h3></div>
+          <p class="pt-sub">Healthy control from CTA, with imposed lesions and prescribed post-treatment lumens</p>
+          <label class="pt-row"><span>Lumen</span><select id="pt-variant"></select></label>
+          <div class="pt-row"><span>Color by</span>
+            <div class="segmented tiny" id="pt-color" role="radiogroup" aria-label="Color by">
+              <button role="radio" data-value="patch">Patches</button>
+              <button role="radio" data-value="diameter">Diameter</button>
+              <button role="radio" data-value="wss">WSS (1D est.)</button>
+            </div>
+          </div>
+          <div class="pt-key" id="pt-key"></div>
+          <p class="pt-attrib" id="pt-attrib"></p>
+        </section>
         <div class="vp-overlay right legend">
           <div class="legend-title" id="legend-title">WSS (Pa)</div>
           <div class="legend-body">
@@ -162,20 +180,20 @@
             <div class="muted">of healthy flow</div>
           </div>
         </div>
-        <div class="vp-overlay bottom probe-bar">
+        <div class="vp-overlay bottom probe-bar param-only">
           <span>Probe</span>
           <input type="range" id="probe" min="0" max="1" step="0.0025" value="0.5" aria-label="Probe position along the vessel" />
           <span class="mono" id="probe-s">10.0 mm</span>
         </div>
-        <div class="vp-overlay flow-arrow" aria-hidden="true">flow → <span id="motion-pill"></span></div>
+        <div class="vp-overlay flow-arrow param-only" aria-hidden="true">flow → <span id="motion-pill"></span></div>
         <div class="vp-error" id="vp-error" hidden></div>
       </div>
 
       <div class="charts panel">
         <div class="tabs" role="tablist">
           <button role="tab" class="active" data-tab="profiles">Along the vessel</button>
-          <button role="tab" data-tab="sensitivity">Sensitivity</button>
-          <span class="tab-hint" id="tab-hint">Click or drag a chart to move the probe</span>
+          <button role="tab" data-tab="sensitivity" class="param-only">Sensitivity</button>
+          <span class="tab-hint param-only" id="tab-hint">Click or drag a chart to move the probe</span>
         </div>
         <div class="tab-body" data-body="profiles">
           <canvas class="chart" id="c-diam"></canvas>
@@ -200,7 +218,15 @@
 
     <!-- ───────── Right: results ───────── -->
     <aside class="panel results" aria-label="Results" aria-live="polite">
-      <section class="card hero restore" id="restore-card">
+      <section class="card hero patient-only" id="patient-card">
+        <div class="card-head">
+          <h2>Patient lumens · reduced-order predictions</h2>
+          <span class="info" title="Our 1D model run on each lumen's measured M1 area profile (Poiseuille + Young–Tsai loss), territory BC: inlet 85 mmHg, venous 10 mmHg, distal resistance calibrated so the healthy lumen carries 153 mL/min. These are the predictions the 3D CFD (docs/cfd-howto.md) is meant to check; they are not CFD results.">ⓘ</span>
+        </div>
+        <table class="cmp pt-table" id="pt-table"></table>
+        <p class="note" id="pt-note"></p>
+      </section>
+      <section class="card hero restore param-only" id="restore-card">
         <div class="card-head">
           <h2>Primary endpoint · distal flow restored</h2>
           <span class="info" title="Distal (outlet) flow before and after the selected device, as a share of the healthy reference distal flow for this section. 'Restored' is the share of the flow deficit recovered: (after − before) ÷ (healthy − before). Perforator flow is reported separately under secondary endpoints. This is volumetric flow in this vessel, not an angiographic eTICI grade; no collaterals or autoregulation are modeled.">ⓘ</span>
@@ -229,7 +255,7 @@
         <p class="note" id="restore-note"></p>
       </section>
 
-      <section class="card endpoints">
+      <section class="card endpoints param-only">
         <div class="card-head">
           <h2>Secondary endpoints</h2>
           <span class="info" title="Treated segment = the lesion plus any stent or balloon span, measured at the same positions before and after so the columns compare like with like.">ⓘ</span>
@@ -238,7 +264,7 @@
         <p class="note" id="secondary-note"></p>
       </section>
 
-      <section class="card endpoints">
+      <section class="card endpoints param-only">
         <div class="card-head">
           <h2>Safety</h2>
           <span class="info" title="Screening flags from a reduced-order model. Recirculation and stagnation zones are not resolved (they need 3D CFD); the low-shear length and separation flags mark where to look. Wall contact is a thin-wall estimate of the pressure needed to stretch the wall to the device's nominal diameter, not a device-mechanics simulation.">ⓘ</span>
@@ -247,7 +273,7 @@
         <ul class="checks" id="safety-flags"></ul>
       </section>
 
-      <section class="card">
+      <section class="card param-only">
         <div class="card-head">
           <h2>Reynolds number</h2>
           <span class="info" title="Re = ρVD/μ, the ratio of inertial to viscous forces. Pipe-flow criteria: laminar below 2000, transitional 2000–4000, turbulent at 4000 and above.">ⓘ</span>
@@ -274,22 +300,22 @@
       </section>
 
 
-      <section class="card">
+      <section class="card param-only">
         <h2>Hemodynamics</h2>
         <dl class="metrics" id="metrics"></dl>
       </section>
 
-      <section class="card">
+      <section class="card param-only">
         <h2>At probe <span class="mono muted" id="probe-head"></span></h2>
         <dl class="metrics" id="probe-metrics"></dl>
       </section>
 
-      <section class="card warn" id="warnings-card" hidden>
+      <section class="card warn param-only" id="warnings-card" hidden>
         <h2>Model notes</h2>
         <ul id="warnings"></ul>
       </section>
 
-      <p class="disclaimer">
+      <p class="disclaimer param-only">
         Reduced-order steady model: Poiseuille flow at each station, Dean curvature correction, a Young–Tsai
         stenosis loss and a thin-wall elastic lumen. Good for exploring trends; export the STL for full 3D CFD.
       </p>
