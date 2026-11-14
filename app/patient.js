@@ -18,6 +18,7 @@ export class PatientViewer {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.domElement.className = "patient-canvas";
     this.renderer.domElement.hidden = true;
+    this.renderer.domElement.style.display = "none";
     container.appendChild(this.renderer.domElement);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(35, 1, 0.1, 2000);
@@ -116,6 +117,7 @@ export class PatientViewer {
   setActive(on) {
     this.active = on;
     this.renderer.domElement.hidden = !on;
+    this.renderer.domElement.style.display = on ? "block" : "none";   // independent of cached CSS
     if (on) {
       this._resize();
       this.renderer.setAnimationLoop(() => { this.controls.update(); this.renderer.render(this.scene, this.camera); });
