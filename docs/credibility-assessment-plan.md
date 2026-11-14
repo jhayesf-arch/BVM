@@ -61,6 +61,14 @@ reassessing this step and raising the credibility goals.
 | 7 | Model plausibility | **Done** | Governing equations and assumptions in `README.md`; every anatomical input tagged measured, derived or assumed with a citation (`app/anatomy.js`) | Weak alone; keep current |
 | 8 | Calculation verification / UQ | **Done** | `docs/verification-results.md` (`python -m bvm verify`): GCI under 0.4% for every endpoint at 401 stations; Monte Carlo propagation of input uncertainty with rank-correlation sensitivity | Rerun after any engine change. Add bench measurement uncertainty once known. |
 
+**Model B geometry: done for AHMU1218142.** The surface is prepared and verified in
+[cfd-geometry-AHMU1218142.md](cfd-geometry-AHMU1218142.md):
+* watertight, manifold and consistently oriented, with the anatomy unchanged and volume within 0.2%;
+* ports match the authors' Fluent zones to 0.07 mm, and the inflow is reproduced exactly;
+* one input discrepancy found: the case file uses μ 0.00345 Pa·s, where the paper states 0.004;
+* across 43 controls, Murray's D³ rule reproduces the authors' CFD flow split (r = 0.85,
+  mean absolute error 0.05).
+
 Model B (3D CFD) needs its own category 1 and 8 evidence: solver verification, mesh independence by
 GCI on at least three meshes, and outlet BC sensitivity. It then validates against the same bench data.
 

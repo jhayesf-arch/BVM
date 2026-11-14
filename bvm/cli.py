@@ -104,7 +104,23 @@ def main(argv: list[str] | None = None) -> None:
     ver = sub.add_parser("verify", help="grid convergence (GCI) + Monte Carlo UQ report for the credibility plan")
     ver.add_argument("--samples", type=int, default=400)
     ver.add_argument("--out", type=Path, default=Path("docs/verification-results.md"))
+    prep = sub.add_parser("prep-stl", help="add flow extensions + caps to an open vessel STL and verify it")
+    prep.add_argument("stl", type=Path)
+    prep.add_argument("--inlet-diameters", type=float, default=10.0)
+    prep.add_argument("--outlet-diameters", type=float, default=5.0)
+    prep.add_argument("--inlet-index", type=int, default=None, help="override automatic inlet (largest port)")
+    prep.add_argument("--out", type=Path, default=Path("results/prepared"))
     a = ap.parse_args(argv)
+
+    if a.cmd == "prep-stl":
+        from .stlprep import prepare
+        rep = prepare(a.stl, a.out, a.inlet_diameters, a.outlet_diameters, a.inlet_index)
+        for p in rep["ports"]:
+            print(f"{p['name']:9s} D = {p['diameter']:.3f}  extension {p['extension_length']:.1f}")
+        for k, ok in rep["checks"].items():
+            print(("PASS " if ok else "FAIL ") + k)
+        print("wrote " + ", ".join(rep["files"]) + f" to {a.out}/")
+        return
 
     if a.cmd == "verify":
         from .credibility import report

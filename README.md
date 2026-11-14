@@ -163,6 +163,12 @@ categories with status and next steps. That includes a bench-validation protocol
 mimic flow loop and proposed credibility goals.
 
 * `tests/test_verification.py` is the code verification against exact solutions and convergence order.
+* `python -m bvm prep-stl vessel.stl --inlet-diameters 10 --outlet-diameters 5` prepares an open
+  vessel surface for CFD. It adds flow extensions blended from each port to a circle, caps them,
+  names the patches (`wall`, `inlet`, `outlet_k`) and runs geometry checks: watertight, orientation,
+  unchanged anatomy, volume and clearances. `scripts/cmha_prepare.py <id>` does this for a CMHA
+  control and cross-checks it against the authors' Fluent case. See
+  [`docs/cfd-geometry-AHMU1218142.md`](docs/cfd-geometry-AHMU1218142.md).
 * `python -m bvm verify` regenerates [`docs/verification-results.md`](docs/verification-results.md),
   which has the grid convergence index for each endpoint and a Monte Carlo uncertainty propagation
   with sensitivities.
