@@ -51,12 +51,41 @@
   <main class="layout">
     <!-- ───────── Left: controls ───────── -->
     <aside class="panel controls" aria-label="Model inputs">
-      <div class="side-tabs" role="tablist" aria-label="Input groups">
+      <div class="patient-side patient-only" id="patient-side" aria-label="Patient geometry">
+        <section>
+          <h2>Patient MCA · <span id="pt-subject"></span></h2>
+          <p class="pt-sub">A real middle cerebral artery bifurcation, reconstructed from a CT angiogram of a healthy adult
+            (M, 55 y). Choose a lumen below: the same vessel healthy, with a lesion, or after treatment.</p>
+        </section>
+        <section>
+          <h2>Lumen</h2>
+          <div class="pt-variants" id="pt-variants" role="radiogroup" aria-label="Lumen"></div>
+        </section>
+        <section>
+          <h2>Color by</h2>
+          <div class="segmented" id="pt-color" role="radiogroup" aria-label="Color by" style="grid-template-columns: repeat(3, 1fr)">
+            <button role="radio" data-value="patch">Patches</button>
+            <button role="radio" data-value="diameter">Diameter</button>
+            <button role="radio" data-value="wss">WSS (1D est.)</button>
+          </div>
+          <div class="pt-key" id="pt-key"></div>
+        </section>
+        <section class="pt-why">
+          <h2>Why there are no sliders here</h2>
+          <p class="hint">This geometry comes from a scan, so its shape is fixed. The lesions and treated lumens were cut
+            into the scanned vessel when the files were built (70% plaque, 95% clot, and the app's device rules). The
+            sliders in <b>Parametric</b> mode build an idealized tube, and they don't apply to a scanned vessel. To try
+            other severities or positions, regenerate the files with <code>scripts/cmha_variants.py</code>.</p>
+        </section>
+        <p class="pt-attrib" id="pt-attrib"></p>
+      </div>
+
+      <div class="side-tabs param-only" role="tablist" aria-label="Input groups">
         <button role="tab" class="active" data-side="pathology" aria-selected="true">Pathology</button>
         <button role="tab" data-side="anatomy" aria-selected="false">Anatomy <span class="mono muted" id="side-section"></span></button>
       </div>
 
-      <div class="side-body" data-side-body="anatomy" hidden>
+      <div class="side-body param-only" data-side-body="anatomy" hidden>
         <section>
           <h2>Anatomical section</h2>
           <div class="sections" id="sections" role="radiogroup" aria-label="Anatomical section"></div>
@@ -87,7 +116,7 @@
         </section>
       </div>
 
-      <div class="side-body" data-side-body="pathology">
+      <div class="side-body param-only" data-side-body="pathology">
       <section>
         <h2>Pathology factors</h2>
         <div id="factors"></div>
@@ -151,20 +180,6 @@
           <div class="pill" id="regime-pill">—</div>
         </div>
         <section class="device-panel param-only" id="device-panel" hidden aria-label="Device details"></section>
-        <section class="patient-panel patient-only" id="patient-panel" aria-label="Patient geometry">
-          <div class="pt-head"><h3>Patient MCA · <span id="pt-subject"></span></h3></div>
-          <p class="pt-sub">Healthy control from CTA, with imposed lesions and prescribed post-treatment lumens</p>
-          <label class="pt-row"><span>Lumen</span><select id="pt-variant"></select></label>
-          <div class="pt-row"><span>Color by</span>
-            <div class="segmented tiny" id="pt-color" role="radiogroup" aria-label="Color by">
-              <button role="radio" data-value="patch">Patches</button>
-              <button role="radio" data-value="diameter">Diameter</button>
-              <button role="radio" data-value="wss">WSS (1D est.)</button>
-            </div>
-          </div>
-          <div class="pt-key" id="pt-key"></div>
-          <p class="pt-attrib" id="pt-attrib"></p>
-        </section>
         <div class="vp-overlay right legend">
           <div class="legend-title" id="legend-title">WSS (Pa)</div>
           <div class="legend-body">

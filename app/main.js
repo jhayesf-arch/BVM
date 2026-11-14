@@ -1087,22 +1087,34 @@ async function renderPatient() {
   try {
     ptManifest ??= await patient.manifest(PATIENT_SID);
     if (!ptManifest.variants.some((v) => v.key === ptVariant)) ptVariant = "healthy";
-    ptMeta = await patient.load(PATIENT_SID, ptVariant);
+    const meta = await patient.load(PATIENT_SID, ptVariant);
+    if (geomMode !== "patient") return;          // switched back while loading: leave the parametric view alone
+    ptMeta = meta;
     err.hidden = true;
   } catch (e) {
     err.textContent = `Could not load the patient geometry: ${e.message}`;
     err.hidden = false;
     return;
   }
-  const sel = $("#pt-variant");
-  if (!sel.options.length) sel.innerHTML = ptManifest.variants.map((v) => `<option value="${v.key}">${esc(v.label)}</option>`).join("");
-  sel.value = ptVariant;
+  const list = $("#pt-variants");
+  if (!list.children.length) {
+    const groups = [["Baseline", ["healthy"]], ["Occluded", ["occluded_icas70", "occluded_thrombus95"]],
+      ["Recanalized (prescribed outcome)", ["recanalized_thrombectomy", "recanalized_angioplasty", "recanalized_stent"]]];
+    const by = Object.fromEntries(ptManifest.variants.map((v) => [v.key, v]));
+    list.innerHTML = groups.map(([g, keys]) => `<div class="grp">${g}</div>` + keys.filter((k) => by[k]).map((k) => {
+      const v = by[k], detail = v.label.includes("·") ? v.label.split("·").slice(1).join("·").trim() : v.label;
+      return `<button role="radio" data-key="${k}"><b>${esc(PT_SHORT[k] ?? k)}</b><span class="flow">${v.distal_flow_pct.toFixed(0)}% flow</span>` +
+        `<small>${esc(detail)}</small></button>`;
+    }).join("")).join("");
+  }
+  list.querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.key === ptVariant));
   $("#pt-subject").textContent = ptManifest.subject;
   $("#pt-color").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === ptColor));
   // WSS scale fixed to the healthy lumen's range (floor 5 Pa) so lesions read as hot, not rescaled away
   let range = null;
   if (ptColor === "wss") {
     ptHealthy ??= await (await fetch(`data/patient/${PATIENT_SID}/healthy.json`)).json();
+    if (geomMode !== "patient") return;
     range = [0, Math.max(5, 3 * Math.max(...ptHealthy.profile.wss_Pa.slice(1, -1)))];
   } else if (ptColor === "diameter") range = [0, Math.max(...ptMeta.profile.D_healthy_mm)];
   const used = patient.color(ptColor, range);
@@ -1134,7 +1146,7 @@ function renderPatientTable() {
       `<td>${x.distal_flow_pct.toFixed(0)}%</td><td>${x.dP_M1_mmHg.toFixed(1)}</td><td>${restored(x.key)}</td></tr>`).join("") + `</tbody>`;
   const cur = by[ptVariant];
   $("#pt-note").textContent = `${cur.label}. ${cur.throat_diameter_mm ? `Measured throat ${cur.throat_diameter_mm.toFixed(2)} mm (${(100 * cur.throat_ratio).toFixed(1)}% of the local diameter). ` : ""}` +
-    `Distal flow ${cur.distal_flow_mL_min.toFixed(1)} mL/min. Device outcomes are prescribed lumens (app's device rules), not simulated device mechanics. Click a row to view it.`;
+    `Distal flow ${cur.distal_flow_mL_min.toFixed(1)} mL/min. Device outcomes are prescribed lumens (app's device rules), not simulated device mechanics. Click a row or a lumen on the left to view it.`;
 }
 
 function renderPatientCharts() {
@@ -1164,7 +1176,7 @@ async function exportPatient(kind) {
 
 function wirePatient() {
   $("#geom-mode").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b && b.dataset.value !== geomMode) setGeomMode(b.dataset.value); });
-  $("#pt-variant").addEventListener("change", (e) => { ptVariant = e.target.value; renderPatient(); });
+  $("#pt-variants").addEventListener("click", (e) => { const b = e.target.closest("button[data-key]"); if (b) { ptVariant = b.dataset.key; renderPatient(); } });
   $("#pt-color").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { ptColor = b.dataset.value; renderPatient(); } });
   $("#pt-table").addEventListener("click", (e) => { const r = e.target.closest("tr[data-key]"); if (r) { ptVariant = r.dataset.key; renderPatient(); } });
 }
