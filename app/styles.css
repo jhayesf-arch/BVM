@@ -16,6 +16,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
 h1, h2 { margin: 0; font-weight: 600; }
 h2 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
@@ -104,6 +105,10 @@ details[open] summary { margin-bottom: 14px; }
 /* canvases are out of flow so their drawing-buffer size can never feed back into the layout */
 .viewport canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
 .viewport canvas[hidden] { display: none; }
+/* Canvases are positioned, so they would paint over the overlays that come before them in the DOM and swallow
+   their clicks. Keep the 3D views at the bottom of the viewport's stack. */
+.viewport canvas { z-index: 0; }
+.vp-overlay, .vp-error { z-index: 2; }
 .vp-overlay { position: absolute; pointer-events: none; }
 .vp-overlay > * { pointer-events: auto; }
 .top-left { top: 12px; left: 12px; display: flex; gap: 8px; }
