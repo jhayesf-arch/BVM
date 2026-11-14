@@ -292,3 +292,126 @@ def prepare(src, out_dir, inlet_diameters: float = 10.0, outlet_diameters: float
     rep["files"] = sorted(str(p.name) for p in out.glob(f"{stem}*.stl"))
     rep["counts"] = {"vertices": len(ext.V), "faces": len(ext.F), "input_faces": len(F)}
     return rep
+
+
+# ───────────────────────────── centerline, slicing, lesions ─────────────────────────────
+def march_centerline(V: np.ndarray, port: Port, stop: np.ndarray, step: float | None = None,
+                     smooth: int = 5) -> np.ndarray:
+    """Centerline from a port into the vessel until it comes within one port radius of ``stop``.
+
+    Each step moves along the current direction and re-centres on the centroid of the surface
+    vertices in a thin slab perpendicular to it (restricted to 1.5 radii, so branches are ignored).
+    """
+    R = port.diameter / 2
+    h = step or R / 4
+    p, d = port.center.copy(), -port.normal
+    pts = [p.copy()]
+    for _ in range(2000):
+        q = p + h * d
+        rel = V - q
+        along = rel @ d
+        radial = np.linalg.norm(rel - np.outer(along, d), axis=1)
+        sel = (np.abs(along) < h) & (radial < 1.5 * R)
+        if sel.sum() < 6:
+            break
+        c = V[sel].mean(0)
+        c = c - ((c - q) @ d) * d                 # keep the step length along d
+        d_new = c - p
+        d = d_new / np.linalg.norm(d_new)
+        p = c
+        pts.append(p.copy())
+        if np.linalg.norm(p - stop) < R:
+            break
+    P = np.array(pts)
+    if smooth > 1 and len(P) > smooth:
+        k = np.ones(smooth) / smooth
+        P[smooth // 2:-(smooth // 2)] = np.column_stack([np.convolve(P[:, i], k, mode="valid") for i in range(3)])
+    return P
+
+
+def resample(P: np.ndarray, ds: float) -> tuple[np.ndarray, np.ndarray]:
+    """Uniform arc-length resampling. Returns (points, arc length)."""
+    s = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
+    t = np.arange(0, s[-1] + 1e-12, ds)
+    return np.column_stack([np.interp(t, s, P[:, i]) for i in range(3)]), t
+
+
+def slice_area(V: np.ndarray, F: np.ndarray, point: np.ndarray, normal: np.ndarray) -> float:
+    """Lumen cross-section area cut by a plane: area of the closed section loop nearest ``point``."""
+    dist = (V - point) @ normal
+    sgn = dist > 0
+    cross = F[(sgn[F[:, 0]] != sgn[F[:, 1]]) | (sgn[F[:, 1]] != sgn[F[:, 2]])]
+    seg = []
+    for f in cross:
+        ends = []
+        for a, b in ((f[0], f[1]), (f[1], f[2]), (f[2], f[0])):
+            if sgn[a] != sgn[b]:
+                t = dist[a] / (dist[a] - dist[b])
+                ends.append(((min(a, b), max(a, b)), V[a] + t * (V[b] - V[a])))
+        if len(ends) == 2:
+            seg.append(ends)
+    if not seg:
+        return 0.0
+    adj, pos = {}, {}
+    for (k1, p1), (k2, p2) in seg:
+        adj.setdefault(k1, []).append(k2)
+        adj.setdefault(k2, []).append(k1)
+        pos[k1], pos[k2] = p1, p2
+    u = np.cross(normal, [1.0, 0, 0] if abs(normal[0]) < 0.9 else [0, 1.0, 0])
+    u /= np.linalg.norm(u)
+    w = np.cross(normal, u)
+    best, seen = None, set()
+    for start in adj:
+        if start in seen:
+            continue
+        loop, prev, cur = [], None, start
+        while cur not in seen:
+            seen.add(cur)
+            loop.append(pos[cur])
+            nxt = [k for k in adj[cur] if k != prev and k not in seen]
+            if not nxt:
+                break
+            prev, cur = cur, nxt[0]
+        L = np.array(loop)
+        if len(L) < 3:
+            continue
+        d0 = np.linalg.norm(L.mean(0) - point)
+        if best is None or d0 < best[0]:
+            xy = np.column_stack([(L - point) @ u, (L - point) @ w])
+            area = 0.5 * abs(np.dot(xy[:, 0], np.roll(xy[:, 1], -1)) - np.dot(xy[:, 1], np.roll(xy[:, 0], -1)))
+            best = (d0, area)
+    return float(best[1]) if best else 0.0
+
+
+def area_profile(V, F, C, s) -> np.ndarray:
+    T = np.gradient(C, s, axis=0)
+    T /= np.linalg.norm(T, axis=1, keepdims=True)
+    return np.array([slice_area(V, F, c, t) for c, t in zip(C, T)])
+
+
+def apply_stenosis(V: np.ndarray, C: np.ndarray, s: np.ndarray, center: float, length: float,
+                   pct: float, basis: str = "diameter", max_radius: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Cosine-shaped concentric narrowing of the lumen about a centerline (same profile as the 1D model).
+
+    Vertices are pulled toward their nearest centerline point by factor 1 − depth·bump(s). Only vertices
+    within ``max_radius`` of the centerline and whose foot point lies inside the lesion are moved.
+    Returns (new vertices, mask of moved vertices).
+    """
+    ratio = 1 - pct / 100 if basis == "diameter" else np.sqrt(1 - pct / 100)
+    depth = 1 - ratio
+    tree = cKDTree(C)
+    dist, idx = tree.query(V)
+    sv = s[idx]
+    xi = (sv - center) / (length / 2)
+    bump = np.where(np.abs(xi) < 1, 0.5 * (1 + np.cos(np.pi * np.clip(xi, -1, 1))), 0.0)
+    if max_radius is not None:
+        bump = np.where(dist < max_radius, bump, 0.0)
+    moved = bump > 0
+    Vn = V.copy()
+    Vn[moved] = C[idx[moved]] + (1 - depth * bump[moved, None]) * (V[moved] - C[idx[moved]])
+    return Vn, moved
+
+
+def face_normals(V, F):
+    n = np.cross(V[F[:, 1]] - V[F[:, 0]], V[F[:, 2]] - V[F[:, 0]])
+    return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-300)
