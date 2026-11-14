@@ -92,9 +92,23 @@
     <section class="center">
       <div class="viewport" id="viewport">
         <div class="vp-overlay top-left">
+          <div class="device-bar" role="toolbar" aria-label="Device">
+            <div class="segmented tiny" id="lesion" role="radiogroup" aria-label="Lesion type">
+              <button role="radio" data-value="icas" title="Chronic intracranial atherosclerotic stenosis (ICAS)">Plaque</button>
+              <button role="radio" data-value="thrombus" title="Acute thrombotic occlusion">Clot</button>
+            </div>
+            <select id="device" aria-label="Device"></select>
+            <select id="device-size" aria-label="Device size" hidden></select>
+            <div class="segmented tiny" id="view" role="radiogroup" aria-label="View" hidden>
+              <button role="radio" data-value="before" title="Untreated vessel">Before</button>
+              <button role="radio" data-value="inplace" title="Device in position (hemodynamics of the untreated vessel)">Device</button>
+              <button role="radio" data-value="after" title="Vessel after treatment">After</button>
+            </div>
+            <button class="btn small" id="device-toggle" aria-expanded="false" hidden>Details ▾</button>
+          </div>
           <div class="pill" id="regime-pill">—</div>
-          <div class="pill subtle" id="motion-pill"></div>
         </div>
+        <section class="device-panel" id="device-panel" hidden aria-label="Device details"></section>
         <div class="vp-overlay right legend">
           <div class="legend-title" id="legend-title">WSS (Pa)</div>
           <div class="legend-body">
@@ -107,7 +121,7 @@
           <input type="range" id="probe" min="0" max="1" step="0.0025" value="0.5" aria-label="Probe position along the vessel" />
           <span class="mono" id="probe-s">10.0 mm</span>
         </div>
-        <div class="vp-overlay flow-arrow" aria-hidden="true">flow →</div>
+        <div class="vp-overlay flow-arrow" aria-hidden="true">flow → <span id="motion-pill"></span></div>
         <div class="vp-error" id="vp-error" hidden></div>
       </div>
 

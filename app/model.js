@@ -31,6 +31,8 @@ export const DEFAULTS = Object.freeze({
   outflowMmHg: 10,
   externalMmHg: 0,
   heartRate: 70,
+  lesion: "icas",     // "icas" (atherosclerotic plaque) or "thrombus" (acute clot); affects rendering + device list
+  rigidSpan: null,    // [startMm, endMm] held non-distensible (stented segment); null = none
 });
 
 export function flowRegime(re) {
@@ -206,6 +208,7 @@ function solveAtFlow(geom, p, q, pIn) {
       if (loss) ramp = Math.min(Math.max((s[i] - s[iT]) / Math.max(sEnd - s[iT], 1e-12), 0), 1);
       pr[i] = pIn - dp - loss * ramp;
       strain[i] = p.rigid ? 0 : ((pr[i] - pExt) * r0[i]) / eh;
+      if (p.rigidSpan && s[i] * 1e3 >= p.rigidSpan[0] - 1e-9 && s[i] * 1e3 <= p.rigidSpan[1] + 1e-9) strain[i] = 0;
       rNew[i] = r0[i] * (1 + Math.max(strain[i], -0.9));
       maxDiff = Math.max(maxDiff, Math.abs(rNew[i] - r[i]));
     }
@@ -219,7 +222,7 @@ function solveAtFlow(geom, p, q, pIn) {
 }
 
 function referenceParams(p) {
-  return { ...p, occlusionPct: 0, tortuosity: 1 };
+  return { ...p, occlusionPct: 0, tortuosity: 1, rigidSpan: null };
 }
 
 /** Solve a configuration. Returns geometry, per-station fields and a summary. */
@@ -233,7 +236,8 @@ export function solve(p, n = 401) {
     sol = solveAtFlow(geom, p, q0, pIn);
   } else {
     const pOut = p.outflowMmHg * MMHG;
-    const ref = solveAtFlow(buildGeometry(referenceParams(p), n), p, q0, pIn);
+    const refP = referenceParams(p);
+    const ref = solveAtFlow(buildGeometry(refP, n), refP, q0, pIn);
     const rDistal = (ref.pressure[n - 1] - pOut) / q0;
     if (rDistal <= 0) throw new Error("The reference vessel alone drops more pressure than is available.");
     const qMax = (pIn - pOut) / rDistal;

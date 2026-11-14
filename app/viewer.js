@@ -259,6 +259,136 @@ export class Viewer {
   }
 
   snapshot() { return this.renderer.domElement.toDataURL("image/png"); }
+
+  // ───────────── lesion body + device overlays ─────────────
+  _frameAtMm(sMm) {
+    const { res } = this.state, g = res.geom, n = g.s.length, L = g.s[n - 1];
+    const f = Math.min(Math.max(sMm * 1e-3 / L, 0), 1) * (n - 1);
+    const i = Math.min(Math.floor(f), n - 2), t = f - i;
+    const lerp = (a) => a[i] * (1 - t) + a[i + 1] * t;
+    return { p: [lerp(g.points.x), lerp(g.points.y), lerp(g.points.z)], N: g.N[i], B: g.B[i], r: lerp(res.radius), r0: lerp(g.radius), i };
+  }
+
+  _pt(fr, rad, th, ds = 0) {
+    // point at angle th, radius rad (m), optional axial offset ds (m) along the local tangent
+    const g = this.state.res.geom, T = g.T[fr.i], c = Math.cos(th), s = Math.sin(th);
+    return this._toScene(
+      fr.p[0] + rad * (c * fr.N[0] + s * fr.B[0]) + ds * T[0],
+      fr.p[1] + rad * (c * fr.N[1] + s * fr.B[1]) + ds * T[1],
+      fr.p[2] + rad * (c * fr.N[2] + s * fr.B[2]) + ds * T[2]);
+  }
+
+  /** Ring-swept tube between two arc lengths (mm). radiusFn(sMm, frame) -> radius in m. */
+  _tube(aMm, bMm, radiusFn, material, { nTheta = 40, dMm = 0.15 } = {}) {
+    const steps = Math.max(2, Math.ceil((bMm - aMm) / dMm) + 1), pos = [], idx = [];
+    for (let k = 0; k < steps; k++) {
+      const sMm = aMm + ((bMm - aMm) * k) / (steps - 1), fr = this._frameAtMm(sMm), rad = radiusFn(sMm, fr);
+      for (let j = 0; j < nTheta; j++) pos.push(...this._pt(fr, rad, (2 * Math.PI * j) / nTheta));
+    }
+    for (let k = 0; k < steps - 1; k++) for (let j = 0; j < nTheta; j++) {
+      const a = k * nTheta + j, b = k * nTheta + ((j + 1) % nTheta), c = a + nTheta, d = b + nTheta;
+      idx.push(a, b, d, a, d, c);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    return new THREE.Mesh(geo, material);
+  }
+
+  _lines(segments, color, opacity = 1) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(segments.flat(), 3));
+    return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity }));
+  }
+
+  /**
+   * extras: { lesion: "thrombus" | "icas" | null, overlay: {type, ...} | null }
+   * Must be called after update() so that the geometry matches the shown result.
+   */
+  setExtras({ lesion = null, overlay = null } = {}) {
+    if (this.extras) { this.group.remove(this.extras); this.extras.traverse((o) => { o.geometry?.dispose(); o.material?.dispose?.(); }); }
+    this.extras = new THREE.Group();
+    this.group.add(this.extras);
+    if (!this.state) return;
+    const { res } = this.state, g = res.geom, n = g.s.length;
+    const rNormLoaded = Math.max(res.radius[0], res.radius[n - 1]);
+
+    // lesion body: annulus between the narrowed lumen and the normal wall
+    if (lesion) {
+      const r0 = Math.max(...g.radius);
+      const inLesion = Array.from(g.radius, (r) => r < r0 * 0.985);
+      const i0 = inLesion.indexOf(true), i1 = inLesion.lastIndexOf(true);
+      if (i0 >= 0) {
+        const aMm = g.s[i0] * 1e3, bMm = g.s[i1] * 1e3;
+        const mat = new THREE.MeshStandardMaterial({
+          color: lesion === "thrombus" ? 0x8a1020 : 0xd8b45a, roughness: lesion === "thrombus" ? 0.35 : 0.8,
+          transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: true,
+        });
+        const outerR = () => rNormLoaded * 0.995;
+        this.extras.add(this._tube(aMm, bMm, outerR, mat));
+        this.extras.add(this._tube(aMm, bMm, (s, fr) => Math.min(fr.r * 1.015, rNormLoaded * 0.99), mat));
+      }
+    }
+
+    if (!overlay) return;
+    const o = overlay;
+    if (o.type === "stent") {
+      const segs = [], crowns = 8, pitch = 1.1, amp = 0.38e-3;
+      const rings = [];
+      for (let s = o.startMm + 0.2; s <= o.endMm - 0.2 + 1e-9; s += pitch) rings.push(s);
+      rings.forEach((sMm, k) => {
+        const fr = this._frameAtMm(sMm), rad = fr.r * 1.01, pts = [];
+        for (let j = 0; j <= 2 * crowns; j++) pts.push(this._pt(fr, rad, (Math.PI * j) / crowns, (j % 2 ? amp : -amp)));
+        for (let j = 0; j < 2 * crowns; j++) segs.push(pts[j], pts[j + 1]);
+        if (k < rings.length - 1) {
+          const fr2 = this._frameAtMm(rings[k + 1]), rad2 = fr2.r * 1.01;
+          for (let j = (k % 2) * 2; j < 2 * crowns; j += 4)
+            segs.push(this._pt(fr, rad, (Math.PI * (j + 1)) / crowns, amp), this._pt(fr2, rad2, (Math.PI * (j + 1)) / crowns, -amp));
+        }
+      });
+      this.extras.add(this._lines(segs, 0xeef3f8));
+      // radiopaque markers at both ends
+      for (const sMm of [o.startMm, o.endMm]) {
+        const fr = this._frameAtMm(sMm);
+        for (let j = 0; j < 4; j++) {
+          const m = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), new THREE.MeshStandardMaterial({ color: 0xffd34d, emissive: 0x332200 }));
+          m.position.set(...this._pt(fr, fr.r * 1.02, (Math.PI * j) / 2));
+          this.extras.add(m);
+        }
+      }
+    } else if (o.type === "retriever") {
+      const a = o.centerMm - o.lengthMm / 2, b = o.centerMm + o.lengthMm / 2, segs = [];
+      const rad = Math.min(o.diameterMm / 2 * 1e-3, rNormLoaded * 0.97), strands = 6, pitchMm = 9, dMm = 0.25;
+      for (const dir of [1, -1]) for (let k = 0; k < strands; k++) {
+        let prev = null;
+        for (let s = Math.max(a, 0.3); s <= Math.min(b, (g.s[n - 1] * 1e3) - 0.3); s += dMm) {
+          const fr = this._frameAtMm(s), th = (2 * Math.PI * k) / strands + dir * (2 * Math.PI * (s - a)) / pitchMm;
+          const p = this._pt(fr, rad, th);
+          if (prev) segs.push(prev, p);
+          prev = p;
+        }
+      }
+      this.extras.add(this._lines(segs, 0xffb347));
+      // push wire along the centerline from the inlet to the device
+      const wire = [];
+      for (let s = 0; s < Math.max(a, 0.3); s += 0.5) wire.push(this._pt(this._frameAtMm(s), 0, 0), this._pt(this._frameAtMm(Math.min(s + 0.5, a)), 0, 0));
+      this.extras.add(this._lines(wire, 0xcfd6df));
+    } else if (o.type === "balloon") {
+      const a = Math.max(o.centerMm - o.lengthMm / 2, 0.2), b = Math.min(o.centerMm + o.lengthMm / 2, g.s[n - 1] * 1e3 - 0.2);
+      const rb = o.diameterMm / 2 * 1e-3, taper = 1.0;
+      const mat = new THREE.MeshStandardMaterial({ color: 0x5fd3ff, transparent: true, opacity: 0.35, roughness: 0.2, depthWrite: false, side: THREE.DoubleSide });
+      this.extras.add(this._tube(a, b, (s) => rb * Math.max(0.15, Math.min(1, (s - a) / taper, (b - s) / taper)), mat));
+    } else if (o.type === "catheter") {
+      const ro = o.odMm / 2 * 1e-3, ri = o.idMm / 2 * 1e-3;
+      const mat = new THREE.MeshStandardMaterial({ color: 0xc9d3df, roughness: 0.5, side: THREE.DoubleSide });
+      this.extras.add(this._tube(0, o.tipMm, () => ro, mat, { nTheta: 32 }));
+      this.extras.add(this._tube(0, o.tipMm, () => ri, new THREE.MeshStandardMaterial({ color: 0x3a4250, side: THREE.DoubleSide }), { nTheta: 32 }));
+      const fr = this._frameAtMm(o.tipMm), segs = [];
+      for (let j = 0; j < 32; j++) segs.push(this._pt(fr, ri, (2 * Math.PI * j) / 32), this._pt(fr, ro, (2 * Math.PI * j) / 32));
+      this.extras.add(this._lines(segs, 0x9aa6b5));
+    }
+  }
 }
 
 export { SLOW_MOTION };

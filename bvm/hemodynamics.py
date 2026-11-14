@@ -191,6 +191,9 @@ def _solve_at_flow(geom: VesselGeometry, blood: Blood, fl: FlowConditions, q: fl
             dp = dp + loss * ramp
         p = p_inlet - dp
         strain = np.zeros_like(r) if v.is_rigid else (p - p_ext) * r0 / eh
+        if v.rigid_span_mm is not None:
+            a, b = v.rigid_span_mm
+            strain = np.where((s * 1e3 >= a - 1e-9) & (s * 1e3 <= b + 1e-9), 0.0, strain)
         r_new = r0 * (1.0 + np.maximum(strain, -0.9))
         if np.max(np.abs(r_new - r)) < 1e-12:
             break
@@ -219,7 +222,7 @@ def _solve_at_flow(geom: VesselGeometry, blood: Blood, fl: FlowConditions, q: fl
 
 
 def _reference_vessel(v: Vessel) -> Vessel:
-    return replace(v, occlusion_pct=0.0, tortuosity=1.0)
+    return replace(v, occlusion_pct=0.0, tortuosity=1.0, rigid_span_mm=None)
 
 
 def solve(vessel: Vessel, blood: Blood | None = None, flow: FlowConditions | None = None,

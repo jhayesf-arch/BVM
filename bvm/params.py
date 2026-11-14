@@ -43,6 +43,8 @@ class Vessel:
     stenosis_center: float = 0.5       # stenosis location as a fraction of arc length
     stiffness_kpa: float = 1000.0   # Young's modulus of the wall/substrate; math.inf = rigid
     wall_thickness_mm: float = 0.3
+    # Arc-length span (mm) held non-distensible, e.g. a segment scaffolded by an implanted stent.
+    rigid_span_mm: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         if self.diameter_mm <= 0 or self.length_mm <= 0:

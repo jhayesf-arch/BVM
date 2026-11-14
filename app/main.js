@@ -1,6 +1,7 @@
 import { DEFAULTS, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, solve, throatRatio, validate } from "./model.js";
 import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js";
 import { LineChart, fmt } from "./charts.js";
+import { DEVICES, deviceById, defaultOptions, patentUrl, treat } from "./devices.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -44,6 +45,8 @@ const ADVANCED = [
 
 const PRESETS = [
   { name: "Healthy M1 (baseline)", p: {} },
+  { name: "Acute M1 clot · near-occlusion", p: { lesion: "thrombus", occlusionPct: 95, stenosisLengthMm: 8 } },
+  { name: "Symptomatic ICAS · 75% (HDE mean)", p: { lesion: "icas", occlusionPct: 75 } },
   { name: "Moderate stenosis · 50%", p: { occlusionPct: 50 } },
   { name: "Severe stenosis · 70%", p: { occlusionPct: 70 } },
   { name: "Critical stenosis · 85%", p: { occlusionPct: 85 } },
@@ -80,6 +83,12 @@ const SENS_Y = [
 // ───────────────────────── state ─────────────────────────
 let params = { ...DEFAULTS, ...readHash() };
 let result = null;
+const hashExtras = new URLSearchParams(location.hash.slice(1));
+let deviceId = deviceById(hashExtras.get("device") ?? "") ? hashExtras.get("device") : null;
+let deviceOpts = defaultOptions(deviceById(deviceId));
+let view = ["before", "inplace", "after"].includes(hashExtras.get("view")) ? hashExtras.get("view") : "after";
+let panelOpen = false;
+let treatment = null, pre = null, post = null;
 let lockedRange = null;
 let probeFrac = 0.5;
 const controls = new Map(); // key -> {sync()}
@@ -211,8 +220,12 @@ function schedule() {
 
 function compute() {
   const err = $("#vp-error");
+  const dev = deviceById(deviceId);
   try {
-    result = solve(params);
+    pre = solve(params);
+    treatment = dev ? treat(dev, params, deviceOpts) : null;
+    post = treatment ? solve(treatment.post) : null;
+    result = post && view === "after" ? post : pre;
     err.hidden = true;
   } catch (e) {
     err.textContent = e.message;
@@ -225,7 +238,10 @@ function compute() {
   if ($("#lock-scale").checked) { lockedRange ??= { field, range }; if (lockedRange.field === field) range = lockedRange.range; else lockedRange = { field, range }; }
   viewer.update(result, field, meta.cmap, range, { reframe: firstFrame || geometryChanged() });
   firstFrame = false;
+  viewer.setExtras(sceneExtras(dev));
   viewer.setProbe(probeFrac);
+  renderDeviceBar(dev);
+  renderDevicePanel(dev);
   updateLegend(meta, range);
   updateCharts();
   updateResults();
@@ -334,7 +350,7 @@ function updateResults() {
   const card2 = $("#warnings-card");
   card2.hidden = !S.warnings.length;
   $("#warnings").innerHTML = S.warnings.map((w) => `<li>${w}</li>`).join("");
-  $("#motion-pill").textContent = `particles ${SLOW_MOTION}× slow-motion`;
+  $("#motion-pill").textContent = `· particles ${SLOW_MOTION}× slow-motion`;
 }
 
 function updateProbe() {
@@ -354,6 +370,163 @@ function updateProbe() {
     ["Dean number", fmt(result.dean[i])],
   ];
   $("#probe-metrics").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+}
+
+// ───────────────────────── devices ─────────────────────────
+const GROUPS = [
+  { lesion: "thrombus", label: "Acute clot · stent retrievers", test: (d) => d.category.startsWith("Stent retriever") },
+  { lesion: "thrombus", label: "Acute clot · aspiration", test: (d) => d.aspiration },
+  { lesion: "icas", label: "ICAS · angioplasty & stenting", test: (d) => d.balloon || d.stent },
+];
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function sceneExtras(dev) {
+  const lesionBefore = params.occlusionPct > 0 ? params.lesion : null;
+  if (!dev || !treatment || view === "before") return { lesion: lesionBefore };
+  if (view === "inplace") return { lesion: lesionBefore, overlay: treatment.overlay };
+  // after: thrombectomy leaves only the underlying plaque; a failed pass leaves the clot
+  const failed = !dev.balloon && !dev.stent && !deviceOpts.success;
+  const lesionAfter = treatment.post.occlusionPct > 0 ? (failed ? params.lesion : "icas") : null;
+  return { lesion: lesionAfter, overlay: dev.stent ? treatment.overlay : null };
+}
+
+function renderDeviceBar(dev) {
+  $("#lesion").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === params.lesion));
+  const sel = $("#device");
+  const html = `<option value="">No device</option>` + GROUPS.filter((g) => g.lesion === params.lesion).map((g) =>
+    `<optgroup label="${g.label}">${DEVICES.filter(g.test).map((d) => `<option value="${d.id}">${esc(d.name)} · ${esc(d.maker.split(" ")[0])}</option>`).join("")}</optgroup>`).join("");
+  if (sel.dataset.lesion !== params.lesion) { sel.innerHTML = html; sel.dataset.lesion = params.lesion; }
+  sel.value = deviceId ?? "";
+  const size = $("#device-size"), viewSeg = $("#view"), tog = $("#device-toggle");
+  size.hidden = viewSeg.hidden = tog.hidden = !dev;
+  if (!dev) return;
+  if (size.dataset.dev !== dev.id) {
+    size.innerHTML = (dev.sizes.length > 1 ? `<option value="">Auto-size</option>` : "") +
+      dev.sizes.map((s, i) => `<option value="${i}">${esc(s.label)}</option>`).join("");
+    size.dataset.dev = dev.id;
+  }
+  size.value = deviceOpts.sizeIdx == null && dev.sizes.length > 1 ? "" : String(treatment?.sizeIdx ?? 0);
+  if (deviceOpts.sizeIdx == null && dev.sizes.length > 1 && treatment)
+    size.options[0].textContent = `Auto · ${dev.sizes[treatment.sizeIdx].label}`;
+  viewSeg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === view));
+  tog.textContent = panelOpen ? "Details ▴" : "Details ▾";
+  tog.setAttribute("aria-expanded", panelOpen);
+}
+
+function optionInputs(dev) {
+  const rows = [];
+  const num = (key, label, hint, min, max, step) => rows.push(`<label class="opt"><span class="lab">${label}${hint ? `<small>${hint}</small>` : ""}</span>
+      <input type="range" data-opt="${key}" min="${min}" max="${max}" step="${step}" value="${deviceOpts[key]}" />
+      <input type="number" data-opt="${key}" min="${min}" max="${max}" step="${step}" value="${+(+deviceOpts[key]).toFixed(2)}" /></label>`);
+  if (dev.balloon) {
+    num("recoilPct", "Elastic recoil, %", "Assumed; no intracranial value in our sources", 0, 50, 1);
+  } else if (dev.stent) {
+    num("residualPct", "Residual stenosis after stenting, %", "Default = HDE study mean 31.9%", 0, 90, 0.1);
+    num("isrPct", "In-stent restenosis at follow-up, %", "0 = none; ≥ 50% is usually called ISR", 0, 90, 1);
+  } else {
+    rows.push(`<label class="check"><input type="checkbox" data-opt="success" ${deviceOpts.success ? "checked" : ""} /> Successful pass (clot removed)</label>`);
+    num("residualPct", "Underlying stenosis after clot removal, %", "0 = purely embolic clot; > 0 = clot on top of ICAS", 0, 90, 1);
+    if (dev.aspiration) {
+      num("vacuumKpa", "Pump vacuum, kPa below atmospheric", "Penumbra reports 98.9 kPa (−29.2 inHg) for RED 72 SILVER LABEL", 20, 101, 0.1);
+      num("catheterLengthCm", "Catheter working length, cm", "Assumed; set from the IFU", 90, 160, 1);
+    }
+    if (dev.adjustable) {
+      const sz = dev.sizes[treatment?.sizeIdx ?? 0];
+      deviceOpts.adjustDiameterMm ??= sz.diameterMm;
+      num("adjustDiameterMm", "Operator-set mesh diameter, mm", `Adjustable up to ${sz.diameterMm} mm`, 0.5, sz.diameterMm, 0.1);
+    }
+  }
+  return rows.join("");
+}
+
+function compareTable() {
+  const a = pre.summary, b = post.summary, rows = [
+    ["Flow (mL/min)", a.Q_mL_min, b.Q_mL_min, 1, true],
+    ...(a.flow_fraction != null ? [["Flow, % of healthy", a.flow_fraction * 100, b.flow_fraction * 100, 0, true]] : []),
+    ["Throat diameter (mm)", a.D_throat_mm, b.D_throat_mm, 2, true],
+    ["Reynolds number, throat", a.Re_throat, b.Re_throat, 0, null],
+    ["Reynolds number, inlet", a.Re_inlet, b.Re_inlet, 0, null],
+    ["Pressure drop ΔP (mmHg)", a.dP_mmHg, b.dP_mmHg, 2, false],
+    ["Pd / Pa", a.Pd_Pa, b.Pd_Pa, 3, true],
+    ["Peak WSS (Pa)", a.wss_max, b.wss_max, 1, false],
+  ];
+  const cell = (v, d) => (isFinite(v) ? (+v.toFixed(d)).toLocaleString() : "—");
+  const body = rows.map(([k, x, y, d, upGood]) => {
+    const cls = upGood == null || Math.abs(y - x) < 1e-9 * Math.max(1, Math.abs(x)) ? "" : (y > x) === upGood ? "up" : "down";
+    return `<tr><td>${k}</td><td>${cell(x, d)}</td><td class="${cls}">${cell(y, d)}</td></tr>`;
+  }).join("");
+  const band = a.ischemia_band ? `<tr><td>Perfusion band</td><td>${a.ischemia_band.replace("-", " ")}</td><td>${b.ischemia_band.replace("-", " ")}</td></tr>` : "";
+  const regime = `<tr><td>Flow regime (max)</td><td>${a.regime_max}</td><td>${b.regime_max}</td></tr>`;
+  return `<table class="cmp"><thead><tr><th></th><th>Before</th><th>After</th></tr></thead><tbody>${body}${regime}${band}</tbody></table>`;
+}
+
+function renderDevicePanel(dev) {
+  const panel = $("#device-panel");
+  panel.hidden = !(dev && panelOpen && treatment);
+  if (panel.hidden) return;
+  const t = treatment, pt = dev.patents;
+  const tagText = { marking: "on manufacturer's patent-marking page", family: "related patent family · not confirmed as product marking", "not-found": "no patents confirmed" }[pt.status];
+  const scroll = panel.scrollTop;
+  panel.innerHTML = `
+    <button class="dp-close" aria-label="Close device details">×</button>
+    <h3>${esc(dev.name)}</h3>
+    <div class="maker">${esc(dev.maker)} · ${esc(dev.category)} · ${esc(t.size.label)}</div>
+    <p class="summary">${esc(dev.summary)}</p>
+    <p class="hint">${esc(dev.sizingNote)}</p>
+
+    <h4>Procedure inputs</h4>
+    ${optionInputs(dev)}
+
+    <h4>Sizing &amp; IFU checks</h4>
+    <ul class="checks">${t.checks.map((c) => `<li class="${c.level}">${esc(c.text)}</li>`).join("")}</ul>
+
+    <h4>Device metrics</h4>
+    <dl class="metrics">${t.metrics.map(([k, v, tip]) => `<dt${tip ? ` title="${esc(tip)}"` : ""}>${esc(k)}${tip ? " ⓘ" : ""}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
+
+    <h4>Hemodynamics before → after</h4>
+    ${compareTable()}
+
+    <h4>Patents <span class="tag ${pt.status}">${tagText}</span></h4>
+    ${pt.nums.length ? `<div class="patents">${pt.nums.map((n) => `<a href="${patentUrl(n)}" target="_blank" rel="noopener">US ${n}</a>`).join("")}</div>` : ""}
+    <p class="hint">${esc(pt.source.note ?? "")} Source: <a href="${pt.source.url}" target="_blank" rel="noopener">${esc(pt.source.label)}</a></p>
+
+    <h4>Sources</h4>
+    <ul class="srcs hint">${dev.sources.map((s) => `<li><a href="${s.url}" target="_blank" rel="noopener">${esc(s.label)}</a></li>`).join("")}</ul>
+    <p class="hint">Outcome inputs (pass success, residual stenosis, recoil, restenosis) are set by you or taken from published means. The model does not simulate device–clot or device–wall mechanics; it computes the hemodynamic consequence of the resulting lumen.</p>`;
+  panel.scrollTop = scroll;
+  panel.querySelector(".dp-close").addEventListener("click", () => { panelOpen = false; schedule(); });
+  panel.querySelectorAll("[data-opt]").forEach((el) => {
+    const evt = el.type === "range" ? "input" : "change";
+    el.addEventListener(evt, () => {
+      const k = el.dataset.opt;
+      deviceOpts = { ...deviceOpts, [k]: el.type === "checkbox" ? el.checked : parseFloat(el.value) };
+      if (el.type === "range") { const twin = panel.querySelector(`input[type=number][data-opt="${k}"]`); if (twin) twin.value = el.value; }
+      schedule();
+    });
+  });
+}
+
+function wireDevices() {
+  $("#lesion").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b || b.dataset.value === params.lesion) return;
+    const dev = deviceById(deviceId);
+    if (dev && dev.lesion !== b.dataset.value) { deviceId = null; panelOpen = false; }
+    set("lesion", b.dataset.value);
+  });
+  $("#device").addEventListener("change", (e) => {
+    deviceId = e.target.value || null;
+    deviceOpts = defaultOptions(deviceById(deviceId));
+    panelOpen = !!deviceId;
+    view = "after";
+    schedule();
+  });
+  $("#device-size").addEventListener("change", (e) => {
+    deviceOpts = { ...deviceOpts, sizeIdx: e.target.value === "" ? null : +e.target.value, adjustDiameterMm: null };
+    schedule();
+  });
+  $("#view").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { view = b.dataset.value; schedule(); } });
+  $("#device-toggle").addEventListener("click", () => { panelOpen = !panelOpen; schedule(); });
 }
 
 // ───────────────────────── sensitivity ─────────────────────────
@@ -401,6 +574,8 @@ function buildPresets() {
     if (sel.value === "") return;
     const keepBc = params.bc;
     params = { ...DEFAULTS, bc: keepBc, ...PRESETS[+sel.value].p };
+    const dev = deviceById(deviceId);
+    if (dev && dev.lesion !== params.lesion) { deviceId = null; panelOpen = false; }
     renderBcControls();
     schedule();
     const v = sel.value; requestAnimationFrame(() => (sel.value = v));
@@ -412,7 +587,7 @@ function readHash() {
   try {
     const q = new URLSearchParams(location.hash.slice(1)), out = {};
     for (const [k, v] of q) {
-      if (!(k in DEFAULTS)) continue;
+      if (!(k in DEFAULTS) || k === "rigidSpan") continue;
       const d = DEFAULTS[k];
       out[k] = typeof d === "number" ? parseFloat(v) : typeof d === "boolean" ? v === "1" : v;
       if (typeof d === "number" && !isFinite(out[k])) delete out[k];
@@ -422,7 +597,8 @@ function readHash() {
 }
 function writeHash() {
   const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) if (v !== DEFAULTS[k]) q.set(k, typeof v === "boolean" ? (v ? "1" : "0") : String(+(+v).toPrecision(6) || v));
+  for (const [k, v] of Object.entries(params)) if (k !== "rigidSpan" && v !== DEFAULTS[k]) q.set(k, typeof v === "boolean" ? (v ? "1" : "0") : String(+(+v).toPrecision(6) || v));
+  if (deviceId) { q.set("device", deviceId); q.set("view", view); }
   history.replaceState(null, "", `${location.pathname}${location.search}${q.toString() ? `#${q}` : ""}`);
 }
 
@@ -482,7 +658,11 @@ function buildExport() {
     const tag = `mca_D${params.diameterMm}_TI${params.tortuosity}_occ${params.occlusionPct.toFixed(0)}_E${params.rigid ? "rigid" : Math.round(params.stiffnessKpa)}`;
     if (kind === "stl") download(`${tag}.stl`, stl(), "model/stl");
     if (kind === "csv") download(`${tag}_profiles.csv`, csv(), "text/csv");
-    if (kind === "json") download(`${tag}.json`, JSON.stringify({ inputs: params, results: result.summary }, null, 2), "application/json");
+    if (kind === "json") download(`${tag}.json`, JSON.stringify({
+      inputs: params, view, results: result.summary,
+      device: treatment ? { id: deviceId, name: deviceById(deviceId).name, size: treatment.size.label, options: deviceOpts,
+        checks: treatment.checks, metrics: treatment.metrics, before: pre.summary, after: post.summary } : null,
+    }, null, 2), "application/json");
     if (kind === "png") download(`${tag}.png`, viewer.snapshot());
     if (kind === "link") {
       try { await navigator.clipboard.writeText(location.href); btn.textContent = "Link copied ✓"; }
@@ -513,6 +693,7 @@ buildPresets();
 buildSensitivity();
 buildExport();
 wireDisplay();
+wireDevices();
 syncControls();
 compute();
 
