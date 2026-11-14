@@ -338,3 +338,9 @@ body.patient-mode .patient-side { display: block !important; }
 .pt-table tr { cursor: pointer; }
 .pt-table tr.sel td { background: #1f3147; }
 .pt-table td:first-child { white-space: normal; }
+
+/* oxygen delivery */
+.badge.oef-normal { background: rgba(62,207,142,.15); color: var(--ok); text-transform: none; }
+.badge.oef-compensated { background: rgba(245,176,65,.15); color: var(--warn); text-transform: none; }
+.badge.oef-unmet { background: rgba(255,92,92,.15); color: var(--bad); text-transform: none; }
+#oxygen td .badge { margin: 0 0 0 4px; font-size: 10px; }

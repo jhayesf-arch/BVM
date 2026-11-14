@@ -16,8 +16,11 @@ ML_MIN_TO_M3_S = 1e-6 / 60.0
 class Blood:
     """Newtonian blood. Defaults are the conventional CFD values."""
 
-    mu: float = 0.0035   # dynamic viscosity, Pa·s
+    mu: float = 0.0035   # dynamic viscosity at a hematocrit of 45%, Pa·s
     rho: float = 1060.0  # density, kg/m³
+    hematocrit: float = 45.0               # %, sets O₂ content and (if coupled) viscosity
+    viscosity_from_hematocrit: bool = True  # scale μ and the microvascular bed by Pries et al. 1994
+    micro_diameter_um: float = 25.0         # effective diameter of the resistance vessels downstream (assumed)
 
     @property
     def nu(self) -> float:

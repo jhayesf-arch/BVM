@@ -17,6 +17,7 @@ from scipy.integrate import cumulative_trapezoid
 from scipy.optimize import brentq
 
 from .geometry import VesselGeometry, build_geometry
+from .oxygen import HCT_REF, Oxygen, territory_oxygen, viscosity_ratio, wall_o2_index
 from .params import MMHG_TO_PA, ML_MIN_TO_M3_S, Blood, FlowConditions, Vessel
 
 # Pipe-flow regime limits (steady flow in a straight, smooth tube).
@@ -72,6 +73,10 @@ class VesselSolution:
     branch_q: np.ndarray = field(default_factory=lambda: np.zeros(0))   # m³/s into each side branch
     reference_q_out: float | None = None
     reference_branch_q: np.ndarray | None = None
+    oxygen: Oxygen = field(default_factory=Oxygen)
+    mu_effective: float | None = None   # viscosity actually used (after hematocrit coupling)
+    distal_scale: float = 1.0           # microvascular resistance factor from hematocrit
+    wss_reference: float | None = None  # healthy inlet WSS at the reference flow (for the wall O₂ index)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -150,6 +155,20 @@ class VesselSolution:
             },
             "warnings": list(self.warnings),
         }
+        mu_eff = self.mu_effective or b.mu
+        out["blood"] = {"hematocrit_pct": b.hematocrit, "mu_effective_Pa_s": mu_eff, "distal_resistance_scale": self.distal_scale,
+                        "hemoglobin_g_dL": self.oxygen.hemoglobin(b.hematocrit), "CaO2_mL_dL": self.oxygen.content(b.hematocrit)}
+        to_ml = 1 / ML_MIN_TO_M3_S
+        ox = {"inlet": territory_oxygen(self.q * to_ml, None, b.hematocrit, self.oxygen)}
+        ox["distal"] = territory_oxygen(self.q_out * to_ml, self.reference_q_out and self.reference_q_out * to_ml, b.hematocrit, self.oxygen)
+        if len(self.branch_q):
+            ref_b = None if self.reference_branch_q is None or self.reference_branch_q.sum() == 0 else self.reference_branch_q.sum() * to_ml
+            ox["perforators"] = territory_oxygen(float(self.branch_q.sum()) * to_ml, ref_b, b.hematocrit, self.oxygen)
+        if self.wss_reference:
+            idx = wall_o2_index(self.wss, mu_eff, self.wss_reference, b.mu)
+            ox["wall_o2_index_min"] = float(idx.min())
+            ox["wall_o2_index_below_0_8_fraction"] = float(np.mean(idx < 0.8))
+        out["oxygen"] = ox
         if v.occlusion_pct > 0:
             sc, half = v.stenosis_center * v.length_mm * 1e-3, v.stenosis_length_mm / 2 * 1e-3
             pa = float(np.interp(sc - half, self.s, self.pressure))
@@ -286,7 +305,7 @@ def _reference_vessel(v: Vessel) -> Vessel:
 
 
 def solve(vessel: Vessel, blood: Blood | None = None, flow: FlowConditions | None = None,
-          reference: Vessel | None = None, n: int = 401) -> VesselSolution:
+          reference: Vessel | None = None, n: int = 401, oxygen: Oxygen | None = None) -> VesselSolution:
     """Solve the vessel. See FlowConditions for the two boundary-condition modes.
 
     For bc="territory" the distal resistance is calibrated on ``reference``
@@ -296,7 +315,21 @@ def solve(vessel: Vessel, blood: Blood | None = None, flow: FlowConditions | Non
     """
     blood = blood or Blood()
     flow = flow or FlowConditions()
+    oxygen = oxygen or Oxygen()
     geom = build_geometry(vessel, n)
+    # Hematocrit: calibrate the territory at 45% (blood.mu), then solve with the hematocrit's viscosity in the
+    # vessel and a correspondingly scaled microvascular bed. At 45% both factors are exactly 1.
+    if blood.viscosity_from_hematocrit and blood.hematocrit != HCT_REF:
+        mu_eff = blood.mu * viscosity_ratio(vessel.diameter_mm * 1e3, blood.hematocrit)
+        dscale = viscosity_ratio(blood.micro_diameter_um, blood.hematocrit)
+    else:
+        mu_eff, dscale = blood.mu, 1.0
+    blood_eff = replace(blood, mu=mu_eff)
+    wss_ref = 4 * blood.mu * flow.flow_ml_min * ML_MIN_TO_M3_S / (np.pi * (vessel.diameter_mm / 2e3) ** 3)
+
+    def finish(sol):
+        sol.blood, sol.oxygen, sol.mu_effective, sol.distal_scale, sol.wss_reference = blood, oxygen, mu_eff, dscale, wss_ref
+        return sol
     p_cal = flow.inlet_pressure_mmhg * MMHG_TO_PA                 # calibration (healthy) inlet pressure
     p_in = (flow.inlet_pressure_mmhg - flow.inlet_drop_mmhg) * MMHG_TO_PA  # actual inlet pressure
     p_out = flow.outflow_pressure_mmhg * MMHG_TO_PA
@@ -312,20 +345,20 @@ def solve(vessel: Vessel, blood: Blood | None = None, flow: FlowConditions | Non
         if np.any(p_branch - p_out <= 0) or ref.pressure[-1] - p_out <= 0:
             raise ValueError("reference vessel alone drops more pressure than is available; check pressures")
         with np.errstate(divide="ignore"):  # a branch given zero flow has infinite resistance
-            branch_r = (p_branch - p_out) / ref_bq if nb else np.zeros(0)
-        r_distal = (ref.pressure[-1] - p_out) / ref.q_out
+            branch_r = (p_branch - p_out) / ref_bq * dscale if nb else np.zeros(0)
+        r_distal = (ref.pressure[-1] - p_out) / ref.q_out * dscale
     else:
         branch_r = np.zeros(0)
 
     if flow.bc == "fixed_flow":
-        return _solve_at_flow(geom, blood, flow, q0, p_in, branch_r=branch_r, p_out=p_out)
+        return finish(_solve_at_flow(geom, blood_eff, flow, q0, p_in, branch_r=branch_r, p_out=p_out))
 
     def residual(q: float) -> float:
-        sol = _solve_at_flow(geom, blood, flow, q, p_in, branch_r=branch_r, p_out=p_out)
+        sol = _solve_at_flow(geom, blood_eff, flow, q, p_in, branch_r=branch_r, p_out=p_out)
         return sol.pressure[-1] - p_out - r_distal * sol.q_out
 
     q_max = (p_in - p_out) * (1.0 / r_distal + float(np.sum(1.0 / branch_r)))
     q = brentq(residual, q_max * 1e-6, q_max, xtol=1e-14, rtol=1e-10)
-    sol = _solve_at_flow(geom, blood, flow, q, p_in, branch_r=branch_r, p_out=p_out)
+    sol = _solve_at_flow(geom, blood_eff, flow, q, p_in, branch_r=branch_r, p_out=p_out)
     sol.reference_q, sol.reference_q_out, sol.reference_branch_q = q0, ref.q_out, ref_bq
-    return sol
+    return finish(sol)

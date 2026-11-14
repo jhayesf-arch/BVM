@@ -179,3 +179,69 @@ Validation still needs measurements: the blood-vessel-mimic flow loop in the
 - [ ] GCI < 5% for the reported endpoints on the finest mesh.
 - [ ] Mass balance: Q_in − (Q₁ + Q₂) < 0.1% of Q_in.
 - [ ] Viscosity and density match section 2 (and match what any comparison case used).
+
+## 9. Hematocrit in the 3D model
+
+The app couples hematocrit to viscosity with the Pries et al. 1994 in vivo law (`bvm/oxygen.py`). It is
+normalized so that a hematocrit of 45% gives the project's μ = 3.5 mPa·s.
+
+* **In the vessel**, use the coupled viscosity shown under *Blood & oxygen* in the app. For example,
+  hematocrit 30% gives μ = 2.39 mPa·s. The equivalent is
+  `python -c "from bvm.oxygen import viscosity_ratio; print(0.0035*viscosity_ratio(2700, 30))"`, using
+  the inlet diameter in µm.
+* **In the territory runs**, multiply both outlet resistances (R₁, R₂) by the microvascular factor
+  `viscosity_ratio(25, Hct)`, which is 0.71 at 30%. Most of the resistance is downstream, so this term
+  sets how much flow changes with hematocrit. Calibrate R at 45% first (step 3), then scale.
+* **Non-Newtonian behavior** matters in recirculation zones, where shear rates are low. If you use a
+  Carreau–Yasuda model, rescale its viscosities by the same hematocrit ratio.
+
+## 10. Oxygen transport (optional)
+
+Delivery to the brain does not need this. Oxygen content does not change along a conducting artery, so
+the Fick calculation in the app (DO₂ = Q·CaO₂) is complete for that. Solve oxygen in 3D when the
+question is **oxygen supply to the vessel wall**. That supply falls in low-shear and recirculation
+zones, a proposed factor in atherogenesis (Tarbell, *Annu Rev Biomed Eng* 2003), and it is also the
+oxygen environment of the blood-vessel-mimic's endothelium.
+
+**Equation (steady, local binding equilibrium, HbO₂ diffusion neglected).** The total oxygen per mL of
+blood is C = α·P + [Hb]·S(P). It is carried by the flow, but only dissolved O₂ diffuses:
+
+  u·∇C = ∇·(α·D·∇P)  ⇔  (1 + ([Hb]/α)·dS/dP) · u·∇P = D·∇²P
+
+The binding factor K = ([Hb]/α)·dS/dP is about 170 near P50 (26.6 mmHg) but only about 6 at arterial
+PO₂ (95 mmHg), with the values in the table below. Ignoring hemoglobin therefore gives large errors
+wherever PO₂ falls (Moore & Ethier, *J Biomech Eng* 1997).
+
+| Parameter | Value | Source |
+|---|---|---|
+| Hill saturation | S = Pⁿ/(Pⁿ + P50ⁿ), n = 2.7, P50 = 26.6 mmHg | Moore & Ethier 1997 |
+| O₂ diffusivity (plasma) | 2.75 × 10⁻⁹ m²/s | Cole et al., *Biophys Chem* 2007, Table 1 |
+| O₂ solubility (plasma) | α = 1.33 µM/mmHg (≈ 3.0 × 10⁻⁵ mL O₂/mL/mmHg) | Cole et al. 2007, Table 1 |
+| Hb binding capacity | [Hb] = 1.34 × Hb/100 mL O₂/mL. Hb 14.85 g/dL at Hct 45%, so 0.199 | Standard; Hb from the app |
+| Inlet | P = PaO₂ (95 mmHg), uniform | App input |
+| Outlets | zero normal gradient | — |
+| Wall | Bounding case: fixed P_w. Physiological case: Robin flux −α·D·∂P/∂n = k_w·(P − P_tissue), lumping wall consumption, the form used by Cole et al. 2007 | Choose and report; the wall-side parameters strongly affect results (Moore & Ethier 1997) |
+
+**Mesh.** The Schmidt number is ν/D ≈ 1,200, so the O₂ boundary layer is far thinner than the velocity
+one. A rough thickness is δ_c ≈ (D·x/γ̇_w)^{1/3}, about 30 µm at γ̇_w = 1,000 s⁻¹ and x = 10 mm. Put at
+least 5–10 cells across it, with a first cell of 3 µm or less. Check this with the same three-mesh GCI
+on the wall flux.
+
+**Implementation**
+* **Fluent:** add a user-defined scalar for C, which is convected by the default mass flux. Use a
+  `DEFINE_DIFFUSIVITY` UDF that sets D_eff = α·D/(α + [Hb]·dS/dP), with P recovered from C by Newton
+  iteration on C = α·P + [Hb]·S(P).
+* **COMSOL:** use a Coefficient Form PDE for P, with convection coefficient β = (1 + ([Hb]/α)·dS/dP)·**u**
+  and diffusion coefficient c = D. Couple it one way to the Laminar Flow solution.
+* **OpenFOAM:** modify `scalarTransportFoam` to carry C with the nonlinear D_eff, as in the Fluent
+  approach.
+
+**Outputs.** Report the wall O₂ flux and the Sherwood number Sh = q_w·d/(α·D·(P_bulk − P_w)) along the
+wall. Compare them with the app's *wall O₂ transfer index*, the Lévêque scaling (γ̇_w/γ̇_ref)^{1/3}. The
+index captures the shear trend, but a 1D model cannot resolve recirculation, where 3D shows the largest
+deficits.
+
+**Bench note.** A blood analog without hemoglobin carries only dissolved O₂: K = 0, and its content is
+about 70 times lower. A vessel-mimic flow loop therefore under-supplies oxygen to the endothelium
+compared with blood at the same PO₂. Account for this in culture conditions, or run the 3D model with
+K = 0 to match the bench.

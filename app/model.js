@@ -46,7 +46,57 @@ export const DEFAULTS = Object.freeze({
   branchStart: 0.3,
   branchEnd: 0.8,
   branchFlowPct: 1.9, // healthy share of inlet flow taken by all branches together
+  // blood composition and oxygen (bvm/oxygen.py); mu above is the viscosity at hct = 45%
+  hct: 45,            // hematocrit, %
+  hctCouple: true,    // viscosity (vessel + microvascular bed) follows hematocrit, Pries et al. 1994
+  microDiamUm: 25,    // effective resistance-vessel diameter downstream, µm (assumed)
+  sao2: 98,           // arterial O2 saturation, %
+  pao2: 95,           // mmHg
+  mchc: 33,           // g/dL; Hb = Hct × MCHC
+  cmro2: 3.3,         // mL O2/100 g/min
+  cbfNormal: 50,      // mL/100 g/min at the healthy reference flow
+  oefMax: 0.8,        // maximum O2 extraction fraction
 });
+
+export const HCT_REF = 45;
+
+/** Relative apparent viscosity (to plasma), Pries et al. 1994 in vivo law (NIH Physiome JSim model 0157). */
+export function priesRelativeViscosity(dUm, hctPct) {
+  const d = dUm, h = hctPct / 100;
+  const eta45 = 6 * Math.exp(-0.085 * d) + 3.2 - 2.44 * Math.exp(-0.06 * d ** 0.645);
+  const w = 1 / (1 + 1e-11 * d ** 12);
+  const c = (0.8 + Math.exp(-0.075 * d)) * (-1 + w) + w;
+  const esl = (d / (d - 1.1)) ** 2;
+  return (1 + (eta45 - 1) * (((1 - h) ** c - 1) / ((1 - 0.45) ** c - 1)) * esl) * esl;
+}
+export const viscosityRatio = (dUm, hctPct) => priesRelativeViscosity(dUm, hctPct) / priesRelativeViscosity(dUm, HCT_REF);
+
+/** Effective viscosity in the vessel and microvascular resistance factor for a hematocrit. */
+export function bloodFactors(p) {
+  const hct = p.hct ?? HCT_REF;
+  if (!(p.hctCouple ?? true) || hct === HCT_REF) return { muEff: p.mu, distalScale: 1 };
+  return { muEff: p.mu * viscosityRatio(p.diameterMm * 1e3, hct), distalScale: viscosityRatio(p.microDiamUm ?? 25, hct) };
+}
+
+export const hemoglobin = (p) => ((p.hct ?? HCT_REF) * (p.mchc ?? 33)) / 100;
+/** Arterial O2 content, mL O2/dL. */
+export const oxygenContent = (p) => 1.34 * hemoglobin(p) * ((p.sao2 ?? 98) / 100) + 0.003 * (p.pao2 ?? 95);
+
+export function oefBand(oef, oefMax) {
+  if (oef <= 0.45) return "normal";
+  if (oef <= oefMax) return "compensated";
+  return "unmet";
+}
+
+function territoryOxygen(qMlMin, qRefMlMin, p) {
+  const cao2 = oxygenContent(p), out = { DO2_mL_min: (qMlMin * cao2) / 100 };
+  if (qRefMlMin) {
+    const cbf = ((p.cbfNormal ?? 50) * qMlMin) / qRefMlMin, tissue = (cbf * cao2) / 100;
+    const oef = tissue > 0 ? (p.cmro2 ?? 3.3) / tissue : Infinity;
+    Object.assign(out, { CBF_mL_100g_min: cbf, DO2_tissue_mL_100g_min: tissue, required_OEF: oef, band: oefBand(oef, p.oefMax ?? 0.8) });
+  }
+  return out;
+}
 
 export function flowRegime(re) {
   if (re < RE_LAMINAR_MAX) return "laminar";
@@ -77,6 +127,7 @@ export function validate(p) {
   if (!(p.nBranches >= 0) || !(p.branchStart > 0 && p.branchStart <= p.branchEnd && p.branchEnd < 1))
     errs.push("Branches need 0 < start ≤ end < 1.");
   if (!(p.branchFlowPct >= 0 && p.branchFlowPct < 100)) errs.push("Branch flow share must be in [0, 100)%.");
+  if (!(p.hct > 0 && p.hct < 80)) errs.push("Hematocrit must be between 0 and 80%.");
   if (p.inletDropMmHg < 0 || p.inletMmHg - p.inletDropMmHg <= p.outflowMmHg)
     errs.push("The upstream pressure drop leaves no driving pressure.");
   return errs;
@@ -275,29 +326,32 @@ export function solve(p, n = 401) {
   const geom = buildGeometry(p, n);
   const pCal = p.inletMmHg * MMHG, pIn = (p.inletMmHg - (p.inletDropMmHg ?? 0)) * MMHG, q0 = p.flowMlMin * MLMIN;
   const pOut = p.outflowMmHg * MMHG, nb = geom.branchIdx.length;
+  const { muEff, distalScale } = bloodFactors(p), pEff = { ...p, mu: muEff };
   const refBq = new Float64Array(nb).fill(nb ? (q0 * p.branchFlowPct) / 100 / nb : 0);
   let branchR = new Float64Array(0), rDistal = null, ref = null;
   if (p.bc !== "fixed_flow" || nb) {
     const refP = referenceParams(p), refGeom = buildGeometry(refP, n);
     ref = solveAtFlow(refGeom, refP, q0, pCal, { branchQ: refBq });
-    branchR = Float64Array.from(refGeom.branchIdx, (idx, k) => (ref.pressure[idx] - pOut) / refBq[k]);
+    branchR = Float64Array.from(refGeom.branchIdx, (idx, k) => ((ref.pressure[idx] - pOut) / refBq[k]) * distalScale);
     if (branchR.some((R) => !(R > 0)) || ref.pressure[n - 1] - pOut <= 0)
       throw new Error("The reference vessel alone drops more pressure than is available.");
-    rDistal = (ref.pressure[n - 1] - pOut) / ref.qOut;
+    rDistal = ((ref.pressure[n - 1] - pOut) / ref.qOut) * distalScale;
   }
   let sol, referenceQ = null;
   const opts = { branchR, pOut };
   if (p.bc === "fixed_flow") {
-    sol = solveAtFlow(geom, p, q0, pIn, opts);
+    sol = solveAtFlow(geom, pEff, q0, pIn, opts);
   } else {
     let qMax = (pIn - pOut) / rDistal;
     for (const R of branchR) qMax += (pIn - pOut) / R;
-    const q = bisect((qq) => { const t = solveAtFlow(geom, p, qq, pIn, opts); return t.pressure[n - 1] - pOut - rDistal * t.qOut; },
+    const q = bisect((qq) => { const t = solveAtFlow(geom, pEff, qq, pIn, opts); return t.pressure[n - 1] - pOut - rDistal * t.qOut; },
       qMax * 1e-6, qMax, qMax * 1e-12);
-    sol = solveAtFlow(geom, p, q, pIn, opts);
+    sol = solveAtFlow(geom, pEff, q, pIn, opts);
     referenceQ = q0;
   }
-  const result = { params: { ...p }, geom, ...sol, referenceQ, referenceQOut: ref?.qOut ?? null, referenceBranchQ: refBq };
+  const wssRef = (4 * p.mu * q0) / (Math.PI * ((p.diameterMm / 2) * 1e-3) ** 3);
+  const result = { params: { ...p }, geom, ...sol, referenceQ, referenceQOut: ref?.qOut ?? null, referenceBranchQ: refBq,
+    muEff, distalScale, wssRef };
   result.summary = summarize(result);
   return result;
 }
@@ -307,6 +361,12 @@ function ischemiaBand(frac) {
   if (frac >= 0.4) return "oligemia";
   if (frac >= 0.2) return "penumbra-range";
   return "core-range";
+}
+
+/** Lévêque scaling of wall O2 mass transfer with wall shear rate, relative to the healthy inlet. */
+export function wallO2Index(res) {
+  const mu = res.muEff ?? res.params.mu, ref = res.wssRef / res.params.mu;
+  return Array.from(res.wss, (w) => Math.cbrt(w / mu / ref));
 }
 
 /** Linear interpolation of y(x) at x0 (x ascending), clamped like numpy.interp. */
@@ -367,6 +427,21 @@ export function summarize(res) {
     const pa = interp1(sc - half, res.geom.s, res.pressure), pb = interp1(sc + half, res.geom.s, res.pressure);
     out.dP_lesion_mmHg = (pa - pb) / MMHG;
     out.Pd_Pa_lesion = pb / pa;
+  }
+  // blood + oxygen (mirrors VesselSolution.summary()["blood"/"oxygen"])
+  out.mu_effective = res.muEff ?? p.mu;
+  out.distal_resistance_scale = res.distalScale ?? 1;
+  out.hemoglobin = hemoglobin(p);
+  out.CaO2 = oxygenContent(p);
+  const toMl = 1 / MLMIN, refB = res.referenceBranchQ?.reduce((a, b) => a + b, 0) ?? 0;
+  out.o2_inlet = territoryOxygen(res.q * toMl, null, p);
+  // tissue terms (CBF, required OEF) only exist with a territory: in fixed-flow mode the flow is prescribed
+  out.o2_distal = territoryOxygen(res.qOut * toMl, res.referenceQ != null ? res.referenceQOut * toMl : null, p);
+  if (res.branchQ.length) out.o2_perforators = territoryOxygen(res.branchQ.reduce((a, b) => a + b, 0) * toMl, refB > 0 && res.referenceQ != null ? refB * toMl : null, p);
+  if (res.wssRef) {
+    const idx = wallO2Index(res);
+    out.wall_o2_index_min = min(idx);
+    out.wall_o2_index_below_0_8_fraction = idx.reduce((c, v) => c + (v < 0.8), 0) / idx.length;
   }
   if (res.referenceQ != null) {
     // distal (outlet) flow vs the healthy reference: the primary perfusion endpoint

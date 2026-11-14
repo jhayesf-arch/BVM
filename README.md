@@ -122,6 +122,28 @@ Notes and limits:
 * **Export:** STL (mm, with wall/inlet/outlet patches), CSV profiles, JSON, PNG, and a shareable link.
   The link encodes the current settings in the URL.
 
+### Blood & oxygen
+
+* **Hematocrit** sets oxygen content (Hb = Hct × 33 g/dL) and, if coupled, the viscosity of the vessel
+  and of the downstream microvascular bed. The coupling uses the Pries et al. 1994 in vivo law,
+  normalized so 45% gives the specified μ = 3.5 mPa·s. Every earlier result is unchanged at 45%.
+* **Oxygen delivery card.** By the Fick principle, CaO₂ is the same upstream and downstream, so a
+  blockage cuts delivery only through flow. The card shows:
+  * DO₂ into the vessel, to the distal territory and to the perforators (mL O₂/min);
+  * territory CBF (mL/100 g/min);
+  * the **required O₂ extraction**, CMRO₂ ÷ (CBF·CaO₂/100): normal ≤ 0.45, compensated "misery
+    perfusion" up to the maximum (≈ 0.8), unmet above it (Baron 1981; Powers 1991; Derdeyn 2002);
+  * before and after a device.
+* **Example results.**
+  * In a healthy vessel, delivery peaks near a hematocrit of 40–45%, the classic optimal hematocrit.
+  * Behind a 70% stenosis, anemia lowers delivery and raises the required extraction, because the
+    stenosis loss does not depend on viscosity. Hemodilution trials in acute stroke were neutral.
+* **Wall O₂ transfer index.** Color the vessel by the Lévêque scaling (γ̇_w/γ̇_ref)^{1/3} of wall O₂
+  supply. Full 3D oxygen transport, with hemoglobin binding, is set out in
+  `docs/cfd-howto.md` (sections 9–10).
+* **What is not modeled:** no autoregulation (arterioles dilate before extraction rises) and no
+  collaterals. Treat the results as a worst case.
+
 ### Device panel (top of the 3D view)
 
 * **Lesion switch.** Choose **Plaque** (chronic intracranial atherosclerotic stenosis, ICAS) or
