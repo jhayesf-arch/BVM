@@ -295,3 +295,7 @@ select.full { width: 100%; }
 .endpoints .cmp td.na { color: #4f5b6b; }
 .endpoints .cmp tr.group td { color: var(--text); font-weight: 600; font-size: 11px; padding-top: 9px; border-bottom: 0; text-align: left; }
 .endpoints .checks { margin-top: 8px; font-size: 12px; }
+.branch-legend { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 11px; display: flex; flex-direction: column; gap: 3px; }
+.branch-legend[hidden] { display: none; }
+.branch-legend i { display: inline-block; width: 12px; height: 4px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.branch-legend .muted { font-size: 10.5px; }

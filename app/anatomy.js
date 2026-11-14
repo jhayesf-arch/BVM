@@ -35,6 +35,12 @@ export const REFS = {
     url: "https://eurjanat.com/articles/a-retrospective-study-of-intracranial-vertebrobasilar-system-morphometry-and-its-variations-using-non-contrast-magnetic-resonance-angiogram-mra/" },
   satapathy2018: { label: "Satapathy & Mohapatra 2018 · basilar artery in cadavers (Eastern India)",
     url: pubmed("Satapathy Mohapatra basilar artery morphometry") },
+  basilarPerf1993: { label: "Microanatomy of the basilar perforators, 14 brainstems (1993): caudal 2–5 (80–600 µm), middle 5–9 (210–940 µm), rostral 1–5",
+    url: pubmed("perforating branches basilar artery microsurgical anatomy caudal middle rostral perforators") },
+  warnert2014: { label: "Warnert et al. 2014, J Cereb Blood Flow Metab 34:956 · brainstem CBF 31.4 ± 10.1 mL/100 g/min (ASL, n = 7)",
+    url: "https://doi.org/10.1038/jcbfm.2014.39" },
+  ponsVol: { label: "MRI pons volume in 1,000 healthy adults: ~19.7–21.1 cm³ (men)",
+    url: "https://pmc.ncbi.nlm.nih.gov/articles/PMC8337326" },
   smoker1986: { label: "Smoker et al. 1986, AJNR · dolichoectasia criterion: basilar diameter > 4.5 mm",
     url: pubmed("Smoker 1986 basilar artery dolichoectasia CT criteria") },
   shoemaker2025: { label: "Shoemaker et al. 2025, J Appl Physiol 138:693 · pressure wire under anesthesia (n = 5): radial 80 ± 18, ICA 70 ± 25, MCA 62 ± 29 mmHg",
@@ -49,9 +55,12 @@ const murray = (d) => +(M1_FLOW * (d / M1_D) ** 3).toFixed(1);
 // total lenticulostriate flow: 7T total lumen area (controls) × 7T mean velocity in basal-ganglia perforators
 const LSA_TOTAL = +(1.08e-6 * 0.045 * 6e7).toFixed(1);       // mL/min
 const LSA_SHARE = +((100 * LSA_TOTAL) / M1_FLOW).toFixed(1);  // % of M1 flow
+// pontine perforator flow: pons ≈ 20 cm³ × 1.04 g/cm³ × brainstem CBF 31.4 mL/100 g/min, as a share of basilar flow
+const PONS_FLOW = +(20 * 1.04 * 0.314).toFixed(1);             // mL/min
+const PONS_SHARE = +((100 * PONS_FLOW) / 138).toFixed(1);       // % of 138 mL/min
 const lsaFlow = (dMm, vCmS) => +((vCmS / 100) * Math.PI * (dMm / 2e3) ** 2 * 6e7).toFixed(2);
 
-// basis entry helpers: [kind, text, refKey?]
+// basis entry helpers: [kind, text, refKey | refKey[] ?]
 const M = (text, ref) => ["measured", text, ref];
 const D = (text, ref) => ["derived", text, ref];
 const A = (text, ref) => ["assumed", text, ref];
@@ -69,7 +78,7 @@ export const SECTIONS = [
       basis: {
         inletMmHg: A("Mean pressure at the M1 origin. Wire data show losses even proximally (MCA 62 ± 29 vs radial 80 ± 18 mmHg).", "shoemaker2025"),
         nBranches: A("6 lateral lenticulostriate perforators (2–12 per side in casts), spread over 30–80% of M1. Their share of flow is derived: " +
-          `total LSA lumen 1.08 mm² × 4.5 cm/s ≈ ${LSA_TOTAL} mL/min ≈ ${LSA_SHARE}% of 153 mL/min`, "lsaArea7T"),
+          `total LSA lumen 1.08 mm² × 4.5 cm/s ≈ ${LSA_TOTAL} mL/min ≈ ${LSA_SHARE}% of 153 mL/min`, ["marinkovic", "lsaArea7T", "bouvy2016"]),
         wallMm: A("Thin-wall estimate for a ~3 mm cerebral artery."),
       },
     },
@@ -203,9 +212,13 @@ export const SECTIONS = [
     why: "Formed by the two vertebral arteries, it feeds the brainstem. It is prone to progressive atherosclerosis, and plaque can cover the origins of its tiny paramedian perforators.",
     ranges: { diameterMm: [1.5, 6, 0.05], flowMlMin: [40, 300, 1], lengthMm: [15, 45, 1] },
     common: {
-      p: { inletMmHg: 85, outflowMmHg: 10, wallMm: 0.3, taper: 1, bulbPct: 0, tortuosity: 1, waves: 1, stenosisLengthMm: 6, stenosisCenter: 0.4 },
+      p: { inletMmHg: 85, outflowMmHg: 10, wallMm: 0.3, taper: 1, bulbPct: 0, tortuosity: 1, waves: 1, stenosisLengthMm: 6, stenosisCenter: 0.4,
+        nBranches: 8, branchStart: 0.1, branchEnd: 0.85, branchFlowPct: PONS_SHARE },
       basis: {
         inletMmHg: A("Same as the M1 inlet assumption."),
+        nBranches: D("8 pontine perforators (caudal 2–5 + middle 5–9 per side in microanatomy; rostral ones arise at the tip/SCA, beyond the outlet). " +
+          `Share derived assuming they feed the pons: ~20 cm³ × 1.04 g/cm³ × 31.4 mL/100 g/min ≈ ${PONS_FLOW} mL/min ≈ ${PONS_SHARE}% of 138 mL/min. ` +
+          "Count and the 'whole pons' assumption are ours.", ["basilarPerf1993", "ponsVol", "warnert2014"]),
         wallMm: A("Thin-wall estimate for a ~3 mm cerebral artery."),
       },
     },
@@ -224,6 +237,7 @@ export const SECTIONS = [
     ],
     scenarios: [
       { name: "Mid-basilar ICAS · 70%", p: { lesion: "icas", occlusionPct: 70, stenosisCenter: 0.5 } },
+      { name: "Plaque over perforator origins · 50%", p: { lesion: "icas", occlusionPct: 50, stenosisCenter: 0.45, stenosisLengthMm: 10 } },
       { name: "Basilar thrombosis · 95%", p: { lesion: "thrombus", occlusionPct: 95, stenosisLengthMm: 10, stenosisCenter: 0.4 } },
       { name: "Dolichoectasia · 5 mm, tortuous", p: { diameterMm: 5.0, tortuosity: 1.3, waves: 1.5 },
         basis: { diameterMm: M("Diameter > 4.5 mm meets the dolichoectasia criterion", "smoker1986") } },

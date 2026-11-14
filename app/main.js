@@ -311,6 +311,10 @@ function compute() {
   renderEndpoints(dev);
   syncSensOptions(dev);
   updateLegend(meta, range);
+  const bl = $("#branch-legend");
+  bl.hidden = !(params.nBranches > 0);
+  bl.title = "Side-branch stubs: perforating arteries leaving this vessel (lenticulostriates off M1, pontine perforators off the basilar). Color = branch flow as a share of its healthy flow.";
+  $("#branch-legend-title").textContent = { m1: "Lenticulostriates", basilar: "Pontine perforators" }[params.section] ?? "Perforators";
   updateCharts();
   updateResults();
   updateProbe();
@@ -632,10 +636,10 @@ function renderAnatomy() {
     $("#section-why").textContent = sec.why;
     $("#geom-source").innerHTML = sec.sources.map((s) => `<option value="${s.id}">${esc(s.label)}</option>`).join("");
     $("#section-scenarios").innerHTML = sec.scenarios.map((s, i) => `<button data-i="${i}">${esc(s.name)}</button>`).join("");
-    const keys = new Set();
-    for (const src of sec.sources) Object.values(src.basis).forEach((b) => b[2] && keys.add(b[2]));
-    Object.values(sec.common.basis).forEach((b) => b[2] && keys.add(b[2]));
-    sec.scenarios.forEach((s) => Object.values(s.basis ?? {}).forEach((b) => b[2] && keys.add(b[2])));
+    const keys = new Set(), addRefs = (b) => [b[2] ?? []].flat().forEach((k) => keys.add(k));
+    for (const src of sec.sources) Object.values(src.basis).forEach(addRefs);
+    Object.values(sec.common.basis).forEach(addRefs);
+    sec.scenarios.forEach((s) => Object.values(s.basis ?? {}).forEach(addRefs));
     $("#section-refs").innerHTML = [...keys].map((k) => `<li><a href="${REFS[k].url}" target="_blank" rel="noopener">${esc(REFS[k].label)}</a></li>`).join("");
     $("#section-note").textContent = {
       carotid: "Only the CCA → bulb → ICA path is modeled; the ECA branch, flow separation and recirculation in the bulb need 3D CFD (export the STL). Stenosis % is relative to the local bulb (ECST-like). The device catalog is intracranial, so its sizing checks will flag the carotid.",
@@ -650,7 +654,8 @@ function renderAnatomy() {
   $("#geom-basis").innerHTML = BASIS_ROWS.map(([k, label, show]) => {
     const b = basis[k];
     const edited = Math.abs((params[k] ?? 0) - (ref[k] ?? 0)) > 1e-9 || (k === "taper" && Math.abs(params.diameterMm - ref.diameterMm) > 1e-9);
-    const refLink = b?.[2] ? ` <a href="${REFS[b[2]].url}" target="_blank" rel="noopener" title="${esc(REFS[b[2]].label)}">ref</a>` : "";
+    const refLink = [b?.[2] ?? []].flat().map((k, j, all) =>
+      ` <a href="${REFS[k].url}" target="_blank" rel="noopener" title="${esc(REFS[k].label)}">ref${all.length > 1 ? j + 1 : ""}</a>`).join("");
     const why = edited ? `<span class="why">Edited from ${esc(BASIS_ROWS.find((r) => r[0] === k)[2](ref))}.</span>`
       : b ? `<span class="why"><span class="kind ${b[0]}">${b[0]}</span> ${esc(b[1])}${refLink}</span>` : "";
     return `<tr><td>${label}${why}</td><td class="v${edited ? " edited" : ""}">${show(params)}</td></tr>`;

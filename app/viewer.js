@@ -343,7 +343,9 @@ export class Viewer {
         const frac = branches[k], sMm = g.s[i] * 1e3, fr = this._frameAtMm(sMm);
         const th = Math.PI / 2 + (k % 2 ? 0.45 : -0.45), lenM = Math.max(1.2e-3, 1.4 * fr.r);
         const radM = Math.max(0.05e-3, Math.min(0.15e-3, 0.07 * fr.r));
-        const a = new THREE.Vector3(...this._pt(fr, fr.r * 0.9, th)), b = new THREE.Vector3(...this._pt(fr, fr.r + lenM, th));
+        // start at the healthy (outer) wall so stubs don't appear to cross a plaque or the lumen
+        const rWall = Math.max(fr.r, fr.rb * (fr.r / fr.r0)) * 0.99;
+        const a = new THREE.Vector3(...this._pt(fr, rWall, th)), b = new THREE.Vector3(...this._pt(fr, rWall + lenM, th));
         const color = frac == null ? 0x8a97a8 : frac >= 0.8 ? 0x3ecf8e : frac >= 0.4 ? 0xf5b041 : frac >= 0.2 ? 0xff8a3d : 0xff5c5c;
         const len = a.distanceTo(b);
         const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radM * 1e3, radM * 1e3 * 0.7, len, 10),
