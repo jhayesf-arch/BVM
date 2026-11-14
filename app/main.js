@@ -1,4 +1,4 @@
-import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, interp1, solve, throatRatio, validate } from "./model.js";
+import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js";
 import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js";
 import { LineChart, fmt } from "./charts.js";
 import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js";
@@ -40,9 +40,22 @@ const ADVANCED = [
   { key: "stenosisCenter", label: "Stenosis position", unit: "", min: 0.1, max: 0.9, step: 0.01, display: (v, p) => `${(v * p.lengthMm).toFixed(1)}`, unitFn: () => "mm" },
   { key: "waves", label: "Number of bends", unit: "", min: 0.5, max: 3, step: 0.5 },
   { key: "externalMmHg", label: "External pressure", unit: "mmHg", min: 0, max: 30, step: 1 },
-  { key: "mu", label: "Blood viscosity μ", unit: "Pa·s", min: 0.002, max: 0.006, step: 0.0001 },
+  { key: "mu", label: "Blood viscosity μ at Hct 45%", unit: "Pa·s", min: 0.002, max: 0.006, step: 0.0001 },
+  { key: "microDiamUm", label: "Microvascular diameter for Hct scaling", unit: "µm", min: 8, max: 100, step: 1 },
+  { key: "cbfNormal", label: "Normal territory CBF", unit: "mL/100g/min", min: 30, max: 80, step: 1 },
+  { key: "oefMax", label: "Maximum O₂ extraction fraction", unit: "", min: 0.6, max: 0.95, step: 0.01 },
   { key: "rho", label: "Blood density ρ", unit: "kg/m³", min: 1000, max: 1100, step: 1 },
   { key: "heartRate", label: "Heart rate (Womersley)", unit: "bpm", min: 40, max: 150, step: 1 },
+];
+
+// Blood composition and oxygen (bvm/oxygen.py)
+const BLOOD = [
+  { key: "hct", label: "Hematocrit", unit: "%", min: 15, max: 65, step: 1,
+    hint: "Sets O₂ content (Hb = Hct × MCHC 33 g/dL) and, if coupled, the viscosity of the vessel and the microvascular bed. 45% is the reference." },
+  { key: "sao2", label: "Arterial O₂ saturation", unit: "%", min: 70, max: 100, step: 1 },
+  { key: "pao2", label: "Arterial PO₂", unit: "mmHg", min: 40, max: 150, step: 1 },
+  { key: "cmro2", label: "O₂ demand (CMRO₂)", unit: "mL/100g/min", min: 1.5, max: 5, step: 0.1,
+    hint: "Normal resting brain ≈ 3.3 (Kety & Schmidt 1948)." },
 ];
 
 // Anatomy-tab shape controls (healthy geometry of the section)
@@ -85,10 +98,11 @@ const FIELDS = {
   velocity: { label: "Mean velocity (m/s)", cmap: "viridis", zero: true, floor: 0.5 },
   reynolds: { label: "Reynolds number", cmap: "viridis", zero: true, floor: 500 },
   strain: { label: "Wall strain (%)", cmap: "viridis", zero: true, floor: 10 },
+  wallo2: { label: "Wall O₂ transfer index", cmap: "viridis", zero: true, floor: 1.2 },
 };
 
-const SENS_X = [...FACTORS, BC_CONTROLS.territory[3], SHAPE[1]].map((f) => ({ key: f.key, label: `${f.label}${f.unit ? ` (${f.unit})` : ""}` }));
-const sensDef = (key) => [...FACTORS, ...BC_CONTROLS.territory, ...SHAPE].find((f) => f.key === key);
+const SENS_X = [...FACTORS, BC_CONTROLS.territory[3], SHAPE[1], BLOOD[0], BLOOD[1]].map((f) => ({ key: f.key, label: `${f.label}${f.unit ? ` (${f.unit})` : ""}` }));
+const sensDef = (key) => [...FACTORS, ...BC_CONTROLS.territory, ...SHAPE, ...BLOOD].find((f) => f.key === key);
 const SENS_Y = [
   { key: "flow_pct", label: "Flow, % of healthy", get: (s) => (s.flow_fraction ?? 1) * 100, bands: true },
   { key: "Q_mL_min", label: "Flow (mL/min)", get: (s) => s.Q_mL_min },
@@ -102,6 +116,10 @@ const SENS_Y = [
   { key: "restored", label: "Flow restored, % of deficit", post: true, get: (s, b) => restoredPct(s, b) ?? NaN },
   { key: "dP_lesion", label: "Pressure drop across lesion (mmHg)", get: (s) => s.dP_lesion_mmHg ?? 0 },
   { key: "branch_pct", label: "Perforator flow, % of healthy", bands: true, get: (s) => (s.branch_fraction ?? NaN) * 100 },
+  { key: "do2", label: "O₂ delivery to territory (mL O₂/min)", get: (s) => s.o2_distal.DO2_mL_min },
+  { key: "cbf", label: "Territory CBF (mL/100 g/min)", get: (s) => s.o2_distal.CBF_mL_100g_min ?? NaN },
+  { key: "oef", label: "Required O₂ extraction (territory)", oef: true, get: (s) => s.o2_distal.required_OEF ?? NaN },
+  { key: "oef_perf", label: "Required O₂ extraction (perforator territory)", oef: true, get: (s) => s.o2_perforators?.required_OEF ?? NaN },
 ];
 
 // share of the flow deficit recovered by the device; null when there is no deficit to recover
@@ -197,6 +215,15 @@ function buildControls() {
   const adv = $("#advanced");
   for (const f of ADVANCED) makeControl(f, adv);
   for (const f of SHAPE) makeControl(f, $("#shape"));
+  for (const f of BLOOD) makeControl(f, $("#blood"));
+  const hc = $("#hct-couple");
+  if (!hc.dataset.wired) { hc.addEventListener("change", () => set("hctCouple", hc.checked)); hc.dataset.wired = "1"; }
+  controls.set("hctCouple", { sync: () => {
+    hc.checked = params.hctCouple;
+    const { muEff, distalScale } = bloodFactors(params);
+    $("#blood-derived").textContent = `Hb ${hemoglobin(params).toFixed(1)} g/dL · CaO₂ ${oxygenContent(params).toFixed(1)} mL O₂/dL · ` +
+      `μ ${(muEff * 1e3).toFixed(2)} mPa·s · microvascular resistance ×${distalScale.toFixed(2)}`;
+  } });
   renderBcControls();
 }
 
@@ -236,7 +263,7 @@ function applySectionRanges(sec) {
 
 function rebuildControls() {
   controls.clear();
-  for (const id of ["#factors", "#advanced", "#shape"]) $(id).innerHTML = "";
+  for (const id of ["#factors", "#advanced", "#shape", "#blood"]) $(id).innerHTML = "";
   buildControls();
 }
 
@@ -310,6 +337,7 @@ function compute() {
   renderAnatomy();
   updateRestoration(dev);
   renderEndpoints(dev);
+  renderOxygen();
   syncSensOptions(dev);
   updateLegend(meta, range);
   const bl = $("#branch-legend");
@@ -450,14 +478,47 @@ function updateRestoration(dev) {
   $("#frac-after").textContent = `${fb.toFixed(0)}% of healthy`;
   Object.assign(meterA.style, { width: `${Math.min(fb, 100)}%`, background: BAND_COLOR[b.ischemia_band] });
   if (r == null) badge($("#restored"), "", "no flow deficit to restore");
+  else if (r > 100.5) badge($("#restored"), "restored-good", "fully restored · flow above baseline");
   else badge($("#restored"), r >= 90 ? "restored-good" : r >= 50 ? "restored-part" : "restored-poor", `restored ${Math.max(r, 0).toFixed(0)}% of deficit`);
   badge($("#band"), b.ischemia_band, `after: ${b.ischemia_band.replace("-", " ")}`);
   const gain = b.Q_distal_mL_min - a.Q_distal_mL_min;
   const failed = !dev.balloon && !dev.stent && !deviceOpts.success;
   const remaining = fb < 99 && !failed ? ` The remaining ${(100 - fb).toFixed(0)}% gap comes from the residual narrowing after treatment${params.inletDropMmHg > 0 ? " and the upstream pressure loss" : ""}.` : "";
+  const hctNote = params.hct !== 45 ? ` "Healthy" is a healthy vessel at normal hematocrit (45%); at ${params.hct}% the blood's viscosity ${params.hct < 45 ? "is lower, so flow can exceed 100%" : "is higher, so flow stays below 100%"} even with a fully open lumen. See Oxygen delivery for the net effect.` : "";
   $("#restore-note").textContent = failed
     ? "Pass set as unsuccessful: the clot stays, so flow is unchanged."
-    : `${gain >= 0 ? "+" : ""}${qFmt(gain)} mL/min after treatment.${remaining} The bar's white line marks flow before treatment.`;
+    : `${gain >= 0 ? "+" : ""}${qFmt(gain)} mL/min after treatment.${remaining} The bar's white line marks flow before treatment.${hctNote}`;
+}
+
+// ───────────────────────── oxygen delivery ─────────────────────────
+const OEF_TXT = { normal: "normal", compensated: "compensated (misery perfusion)", unmet: "demand unmet" };
+function renderOxygen() {
+  const a = pre.summary, b = post?.summary ?? null;
+  const f = (v, d = 1) => (v == null || !isFinite(v) ? "—" : (+v.toFixed(d)).toLocaleString());
+  const row = (k, x, y, cls = "") => `<tr><td>${k}</td><td>${x}</td><td class="${y == null ? "na" : cls}">${y ?? "—"}</td></tr>`;
+  const oefCell = (o) => (o?.required_OEF == null ? "—" : `${f(o.required_OEF, 2)} <span class="badge oef-${o.band}">${OEF_TXT[o.band]}</span>`);
+  const dir = (x, y, upGood) => (y == null || Math.abs(y - x) < 1e-9 ? "" : (y > x) === upGood ? "up" : "down");
+  const ad = a.o2_distal, bd = b?.o2_distal, ap = a.o2_perforators, bp = b?.o2_perforators;
+  let html = `<thead><tr><th></th><th>Before</th><th>After</th></tr></thead>` +
+    row("Arterial O₂ content, mL O₂/dL", f(a.CaO2, 2), b && f(b.CaO2, 2)) +
+    row("Delivered into the vessel, mL O₂/min", f(a.o2_inlet.DO2_mL_min, 2), b && f(b.o2_inlet.DO2_mL_min, 2), b && dir(a.o2_inlet.DO2_mL_min, b.o2_inlet.DO2_mL_min, true)) +
+    row("Delivered to distal territory, mL O₂/min", f(ad.DO2_mL_min, 2), bd && f(bd.DO2_mL_min, 2), bd && dir(ad.DO2_mL_min, bd.DO2_mL_min, true)) +
+    row("Territory CBF, mL/100 g/min", f(ad.CBF_mL_100g_min), bd && f(bd.CBF_mL_100g_min), bd && dir(ad.CBF_mL_100g_min, bd.CBF_mL_100g_min, true)) +
+    row("Required O₂ extraction (distal)", oefCell(ad), bd ? oefCell(bd) : null);
+  if (ap) html += row("Delivered to perforators, mL O₂/min", f(ap.DO2_mL_min, 3), bp && f(bp.DO2_mL_min, 3), bp && dir(ap.DO2_mL_min, bp.DO2_mL_min, true)) +
+    row("Required O₂ extraction (deep)", oefCell(ap), bp ? oefCell(bp) : null);
+  $("#oxygen").innerHTML = html;
+  const tissue = ad.CBF_mL_100g_min == null
+    ? "Fixed-flow mode prescribes the flow, so there is no territory to compare against: switch to Brain territory for CBF and required extraction."
+    : (() => {
+      // healthy delivery: reference flow at a normal hematocrit (45%) with the same SaO2/PaO2
+      const healthyTissue = (params.cbfNormal * oxygenContent({ ...params, hct: 45 })) / 100;
+      const pct = (o) => f((100 * o.DO2_tissue_mL_100g_min) / healthyTissue, 0);
+      return `O₂ content is the same upstream and downstream (${f(a.CaO2, 1)} mL/dL): a blockage cuts delivery only through flow. ` +
+        `The distal territory receives ${pct(ad)}% of healthy O₂ delivery${bd ? ` before and ${pct(bd)}% after treatment` : ""}. ` +
+        `Demand ${params.cmro2} mL O₂/100 g/min; maximum extraction ${params.oefMax}.`;
+    })();
+  $("#oxygen-note").textContent = tissue + (params.hct !== 45 ? ` Hematocrit ${params.hct}%: viscosity ×${(a.mu_effective / params.mu).toFixed(2)} in the vessel, ×${a.distal_resistance_scale.toFixed(2)} downstream.` : "");
 }
 
 // ───────────────────────── secondary + safety endpoints ─────────────────────────
@@ -930,7 +991,8 @@ function computeSensitivity() {
   const curX = f.log ? Math.log10(params[xKey]) : params[xKey];
   const curY = pre ? (y.post ? (post ? y.get(pre.summary, post.summary) : null) : y.get(result.summary)) : null;
   sensChart.opts.title = `${y.label} vs ${f.label.toLowerCase()}${f.log ? " (log₁₀ kPa)" : ""}`;
-  sensChart.opts.thresholds = y.re ? [{ y: RE_LAMINAR_MAX, label: "laminar limit 2000", color: "#f5b041" }] : [];
+  sensChart.opts.thresholds = y.re ? [{ y: RE_LAMINAR_MAX, label: "laminar limit 2000", color: "#f5b041" }]
+    : y.oef ? [{ y: 0.45, label: "upper normal 0.45", color: "#3ecf8e" }, { y: params.oefMax, label: `maximum ${params.oefMax}`, color: "#ff5c5c" }] : [];
   sensChart.opts.bands = y.bands ? [
     { from: 0, to: 20, color: "rgba(255,92,92,.10)" }, { from: 20, to: 40, color: "rgba(255,138,61,.10)" },
     { from: 40, to: 80, color: "rgba(245,176,65,.08)" }, { from: 80, to: 200, color: "rgba(62,207,142,.06)" },

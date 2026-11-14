@@ -132,6 +132,13 @@
         <div id="bc-controls"></div>
       </section>
 
+      <section>
+        <h2>Blood &amp; oxygen</h2>
+        <div id="blood"></div>
+        <label class="check"><input type="checkbox" id="hct-couple" checked /> Viscosity follows hematocrit (Pries 1994)</label>
+        <p class="hint" id="blood-derived"></p>
+      </section>
+
       <details>
         <summary>Advanced geometry &amp; blood</summary>
         <div id="advanced"></div>
@@ -147,6 +154,7 @@
             <option value="velocity">Mean velocity</option>
             <option value="reynolds">Reynolds number</option>
             <option value="strain">Wall strain</option>
+            <option value="wallo2">Wall O₂ transfer index</option>
           </select>
         </label>
         <label class="field-row">
@@ -268,6 +276,15 @@
           <span class="badge" id="band">—</span>
         </div>
         <p class="note" id="restore-note"></p>
+      </section>
+
+      <section class="card endpoints param-only" id="oxygen-card">
+        <div class="card-head">
+          <h2>Oxygen delivery</h2>
+          <span class="info" title="Fick principle. CaO₂ = 1.34·Hb·SaO₂ + 0.003·PaO₂ is the same upstream and downstream of a blockage (conducting arteries consume negligible O₂), so delivery DO₂ = Q·CaO₂ changes only with flow. Territory CBF = 50 mL/100 g/min × flow ÷ healthy flow (calibrated at Hct 45%). Required OEF = CMRO₂ ÷ (CBF·CaO₂/100): ≤ 0.45 normal, up to the maximum (≈ 0.8) the tissue compensates ('misery perfusion', Baron 1981; Powers 1991), above it demand is unmet. No collaterals or autoregulation are modeled, so this is a worst case.">ⓘ</span>
+        </div>
+        <table class="cmp" id="oxygen"></table>
+        <p class="note" id="oxygen-note"></p>
       </section>
 
       <section class="card endpoints param-only">

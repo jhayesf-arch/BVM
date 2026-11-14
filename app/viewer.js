@@ -175,6 +175,10 @@ export class Viewer {
       case "velocity": return res.velocity;
       case "reynolds": return res.reynolds;
       case "strain": return Array.from(res.strain, (e) => e * 100);
+      case "wallo2": {  // Lévêque scaling of wall O2 mass transfer with wall shear rate, re: healthy inlet
+        const mu = res.muEff ?? res.params.mu, ref = res.wssRef / res.params.mu;
+        return Array.from(res.wss, (w) => Math.cbrt(w / mu / ref));
+      }
       default: return res.wss;
     }
   }

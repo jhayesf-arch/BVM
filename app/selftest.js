@@ -27,6 +27,27 @@ export function runSelfTest() {
     if (!near(tot, b.q, 1e-12)) eng.fails.push(`branch mass balance ${tot} vs ${b.q}`);
   }
 
+  // ── blood & oxygen (mirrors tests/test_oxygen.py) ──
+  const ox = group("Engine: hematocrit viscosity and oxygen delivery");
+  {
+    const chk = (ok, msg) => { ox.cases++; if (!ok) ox.fails.push(msg); };
+    chk(Math.abs(M.priesRelativeViscosity(3000, 45) - 3.2) < 0.01, "Pries η(3 mm, 45%) ≠ 3.2");
+    chk(M.priesRelativeViscosity(25, 45) < M.priesRelativeViscosity(3000, 45), "no Fåhræus–Lindqvist reduction at 25 µm");
+    const f45 = M.bloodFactors(M.DEFAULTS);
+    chk(f45.muEff === M.DEFAULTS.mu && f45.distalScale === 1, "Hct 45% must leave viscosity unchanged");
+    const cao2 = 1.34 * (45 * 33 / 100) * 0.98 + 0.003 * 95;
+    chk(near(M.oxygenContent(M.DEFAULTS), cao2, 1e-12), "CaO2 formula");
+    const h = M.solve({ ...M.DEFAULTS }, 161).summary;
+    chk(near(h.o2_distal.required_OEF, 3.3 / (50 * cao2 / 100), 1e-6), `baseline OEF ${h.o2_distal.required_OEF}`);
+    const s = M.solve({ ...M.DEFAULTS, occlusionPct: 80 }, 161).summary;
+    chk(near(s.o2_distal.DO2_mL_min / s.o2_inlet.DO2_mL_min, s.Q_distal_mL_min / s.Q_mL_min, 1e-12), "DO2 ratio ≠ flow ratio");
+    const do2 = (hct) => M.solve({ ...M.DEFAULTS, hct }, 161).summary.o2_distal.DO2_mL_min;
+    chk(do2(45) > do2(25) && do2(45) > do2(55), "no optimal hematocrit in a healthy vessel");
+    const oef = (hct) => M.solve({ ...M.DEFAULTS, hct, occlusionPct: 70 }, 161).summary.o2_distal.required_OEF;
+    chk(oef(25) > oef(35) && oef(35) > oef(45), "anemia should raise required extraction behind a stenosis");
+    chk(M.solve({ ...M.DEFAULTS, occlusionPct: 95 }, 161).summary.o2_distal.band === "unmet", "95% occlusion should leave demand unmet");
+  }
+
   // ── engine: robustness across a parameter grid (both grids the app uses) ──
   const rob = group("Engine: converges across diameter × stenosis × length × branches × grid");
   for (const D of [1.5, 2, 2.5, 3, 4, 5]) for (const pre of [0, 50, 70, 85, 92, 95]) for (const L of [3, 4, 6, 10])
