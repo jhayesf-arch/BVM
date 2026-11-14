@@ -222,7 +222,11 @@ export function treat(dev, p, opts) {
     post = { ...post, occlusionPct: postDS, basis: "diameter" };
     const bl = [9, 15, 20].find((x) => x >= lesionLen) ?? 20;
     check(ratio <= 1.0 + 1e-9, `Balloon ${fmt(bd)} mm is ${fmt(ratio * 100, 0)}% of the ${fmt(D)} mm normal vessel (guideline ≈ 80%; submaximal).`, ratio > 1 ? "bad" : "warn");
-    if (ratio <= 1) checks[checks.length - 1].level = Math.abs(ratio - 0.8) <= 0.07 ? "ok" : "warn";
+    if (ratio <= 1) {
+      const c = checks[checks.length - 1];
+      c.ok = Math.abs(ratio - 0.8) <= 0.07;   // within the ~80% guideline; otherwise a warning, not a pass
+      c.level = c.ok ? "ok" : "warn";
+    }
     check(D >= 2.0 && D <= 4.5, `Normal vessel ${fmt(D)} mm is ${D >= 2 && D <= 4.5 ? "within" : "outside"} the 2.00–4.50 mm Wingspan/Gateway indication.`);
     check(lesionLen <= 14, `Lesion length ${fmt(lesionLen, 1)} mm ${lesionLen <= 14 ? "≤" : ">"} 14 mm limit.`);
     metrics.push(

@@ -171,6 +171,9 @@ categories with status and next steps. That includes a bench-validation protocol
 mimic flow loop and proposed credibility goals.
 
 * `tests/test_verification.py` is the code verification against exact solutions and convergence order.
+* `app/selftest.html` is the browser self-test for the JS engine and every device: sizing rules, outcome
+  rules, physical sense and IFU flags, 2,372 cases. Open it locally or at `…/BVM/app/selftest.html`
+  on the live site.
 * `python -m bvm prep-stl vessel.stl --inlet-diameters 10 --outlet-diameters 5` prepares an open
   vessel surface for CFD. It adds flow extensions blended from each port to a circle, caps them,
   names the patches (`wall`, `inlet`, `outlet_k`) and runs geometry checks: watertight, orientation,

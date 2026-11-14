@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BVM · Self-test (engine + devices)</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { padding: 24px; overflow: auto; height: auto; }
+    main { max-width: 980px; margin: 0 auto; }
+    h1 { font-size: 18px; margin-bottom: 4px; }
+    .sum { margin: 14px 0; font-size: 15px; font-weight: 600; }
+    .sum.pass { color: var(--ok); } .sum.fail { color: var(--bad); }
+    table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    td, th { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    td.n { text-align: right; } .ok { color: var(--ok); } .bad { color: var(--bad); }
+    ul { margin: 4px 0 0; padding-left: 18px; color: #ffc9cf; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Self-test: JS engine and device logic</h1>
+    <p class="hint">Verification evidence for the credibility plan. The engine runs closed-form checks and a
+      robustness grid on both station counts the app uses. Every device runs across 8 vessel diameters,
+      4 stenoses and 4 lesion lengths, with successful and failed passes for thrombectomy devices. Each
+      case is checked against the device's sizing rule, its outcome rule, physical sense (no worse lumen
+      or flow) and its IFU flags. The Python engine is tested separately with <code>pytest</code>.</p>
+    <div class="sum" id="sum">Running…</div>
+    <table><thead><tr><th>Group</th><th>Cases</th><th>Failures</th></tr></thead><tbody id="rows"></tbody></table>
+  </main>
+  <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }</script>
+  <script type="module">
+    import { runSelfTest } from "./selftest.js";
+    const t0 = performance.now();
+    const res = runSelfTest();
+    const cases = res.reduce((a, g) => a + g.cases, 0), fails = res.reduce((a, g) => a + g.fails.length, 0);
+    document.getElementById("rows").innerHTML = res.map((g) =>
+      `<tr><td>${g.name}${g.fails.length ? `<ul>${g.fails.slice(0, 8).map((f) => `<li>${f}</li>`).join("")}${g.fails.length > 8 ? `<li>… ${g.fails.length - 8} more</li>` : ""}</ul>` : ""}</td>` +
+      `<td class="n">${g.cases}</td><td class="n ${g.fails.length ? "bad" : "ok"}">${g.fails.length || "✓ 0"}</td></tr>`).join("");
+    const s = document.getElementById("sum");
+    s.className = `sum ${fails ? "fail" : "pass"}`;
+    s.textContent = `${fails ? "✕" : "✓"} ${cases} cases, ${fails} failures (${((performance.now() - t0) / 1000).toFixed(1)} s)`;
+    window.selftest = { cases, fails, res };
+  </script>
+</body>
+</html>

@@ -209,7 +209,12 @@ def _solve_at_flow(geom: VesselGeometry, blood: Blood, fl: FlowConditions, q: fl
     ends = starts[1:] + [n - 1]
 
     r = r0.copy()
-    for _ in range(200):
+    # Fixed-point iteration on the wall radius with under-relaxation ω = 0.5. If the update stops
+    # shrinking (e.g. a branch flow switching on and off at its zero-flow clamp, which makes the map
+    # piecewise linear and can sustain a limit cycle), ω is halved, down to 1/64. Cases that converge
+    # normally never trigger this, so their results are unchanged.
+    omega, best, stall = 0.5, math.inf, 0
+    for _ in range(4000):
         area0 = np.pi * r[0] ** 2 * base_ratio
         p = np.empty(n); qn = np.empty(n); vel = np.empty(n); re = np.empty(n); dean = np.empty(n); fc = np.empty(n)
         bq = np.zeros(len(b_idx))
@@ -241,11 +246,18 @@ def _solve_at_flow(geom: VesselGeometry, blood: Blood, fl: FlowConditions, q: fl
             a_, b_ = v.rigid_span_mm
             strain = np.where((s * 1e3 >= a_ - 1e-9) & (s * 1e3 <= b_ + 1e-9), 0.0, strain)
         r_new = r0 * (1.0 + np.maximum(strain, -0.9))
-        if np.max(np.abs(r_new - r)) < 1e-12:
+        diff = float(np.max(np.abs(r_new - r)))
+        if diff < 1e-12:
             break
-        r = 0.5 * r + 0.5 * r_new
+        if diff < 0.999 * best:
+            best, stall = diff, 0
+        else:
+            stall += 1
+            if stall >= 20:
+                omega, stall, best = max(omega / 2, 1 / 64), 0, diff
+        r = (1 - omega) * r + omega * r_new
     else:
-        raise RuntimeError("wall-pressure coupling did not converge (wall too soft?)")
+        raise RuntimeError("wall-pressure coupling did not converge (very soft wall or a collapsing lumen?)")
 
     wss = 4 * mu * qn / (np.pi * r**3) * fc
     warnings = []

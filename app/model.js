@@ -211,7 +211,7 @@ export function whiteCurvatureFactor(de) {
 // calibrate) or drain through resistances opts.branchR to opts.pOut. Flow is piecewise constant
 // between branch origins; pressure is marched from the inlet so each branch sees the local
 // pressure, including any upstream stenosis loss. Mirrors bvm.hemodynamics._solve_at_flow.
-function solveAtFlow(geom, p, q, pIn, opts = {}) {
+export function solveAtFlow(geom, p, q, pIn, opts = {}) {
   const { s, curvature: kappa, radius: r0, branchIdx } = geom, n = s.length, nb = branchIdx.length;
   const { branchQ = null, branchR = null, pOut = 0 } = opts;
   const mu = p.mu, rho = p.rho, pExt = p.externalMmHg * MMHG;
@@ -226,12 +226,13 @@ function solveAtFlow(geom, p, q, pIn, opts = {}) {
   let r = Float64Array.from(r0);
   const vel = new Float64Array(n), re = new Float64Array(n), dean = new Float64Array(n), fc = new Float64Array(n), qn = new Float64Array(n);
   const pr = new Float64Array(n), strain = new Float64Array(n), rNew = new Float64Array(n), bq = new Float64Array(nb);
-  let converged = false, qq = q;
+  // under-relaxation ω = 0.5, halved (to 1/64) if the update stalls; mirrors bvm.hemodynamics
+  let converged = false, qq = q, omega = 0.5, best = Infinity, stall = 0;
   const node = (i, qf) => {
     const v = qf / (Math.PI * r[i] * r[i]), rei = (rho * v * 2 * r[i]) / mu, de = rei * Math.sqrt(r[i] * kappa[i]), f = whiteCurvatureFactor(de);
     return [v, rei, de, f, ((8 * mu * qf) / (Math.PI * r[i] ** 4)) * f];
   };
-  for (let it = 0; it < 200; it++) {
+  for (let it = 0; it < 4000; it++) {
     const a0 = Math.PI * r[0] ** 2 * baseRatio;
     let dp = 0, loss = 0, gPrev = 0, maxDiff = 0;
     qq = q;
@@ -253,15 +254,17 @@ function solveAtFlow(geom, p, q, pIn, opts = {}) {
       maxDiff = Math.max(maxDiff, Math.abs(rNew[i] - r[i]));
     }
     if (maxDiff < 1e-12) { converged = true; break; }
-    for (let i = 0; i < n; i++) r[i] = 0.5 * r[i] + 0.5 * rNew[i];
+    if (maxDiff < 0.999 * best) { best = maxDiff; stall = 0; }
+    else if (++stall >= 20) { omega = Math.max(omega / 2, 1 / 64); stall = 0; best = maxDiff; }
+    for (let i = 0; i < n; i++) r[i] = (1 - omega) * r[i] + omega * rNew[i];
   }
-  if (!converged) throw new Error("Wall–pressure coupling did not converge: the wall is too soft for this model.");
+  if (!converged) throw new Error("Wall–pressure coupling did not converge: the wall is very soft or the lumen is collapsing.");
   const wss = new Float64Array(n);
   for (let i = 0; i < n; i++) wss[i] = ((4 * mu * qn[i]) / (Math.PI * r[i] ** 3)) * fc[i];
   return { q, qOut: qq, branchQ: bq, qNode: qn, radius: r, pressure: pr, velocity: vel, reynolds: re, dean, wss, strain };
 }
 
-function referenceParams(p) {
+export function referenceParams(p) {
   return { ...p, occlusionPct: 0, tortuosity: 1, rigidSpan: null };
 }
 
