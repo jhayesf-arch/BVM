@@ -6,6 +6,45 @@ It is meant to support New Approach Methods (NAMs): you can sweep the same param
 on the bench (lumen size, curvature, stenosis, substrate stiffness) and see how they change shear,
 pressure, Reynolds number and distal perfusion.
 
+## Interactive simulator (start here)
+
+A browser app in `app/`. Move the sliders and the 3D vessel, flow animation and every readout update
+instantly. There is no install and no build step: it needs only Python, to serve the files.
+
+```bash
+python3 -m http.server 8766 --directory app
+```
+
+Then open http://localhost:8766.
+
+* **Pathology factors:** luminal diameter, tortuosity index, occlusion % (by diameter or area) and
+  substrate stiffness (log scale from 10 kPa to 10 MPa, or a rigid wall).
+* **3D viewport:** drag to orbit and scroll to zoom. The lumen can be colored by wall shear stress,
+  pressure, velocity, Reynolds number or wall strain. Animated blood particles follow the local
+  parabolic (Poiseuille) velocity profile in 40× slow motion, so they visibly speed up through a
+  stenosis. A probe ring, moved with its slider or by clicking a chart, shows local values.
+* **Reynolds number:** shown at the inlet and at the stenosis throat on a log-scale bar with the
+  laminar (< 2000), transitional (2000–4000) and turbulent (≥ 4000) zones, plus a post-stenotic
+  disturbance warning.
+* **Distal perfusion:** in Brain territory mode, territory flow as a percentage of healthy, with
+  normal, oligemia, penumbra-range and core-range bands.
+* **Charts:**
+  * *Along the vessel* plots diameter, pressure, Re and WSS along the vessel.
+  * *Sensitivity* sweeps any factor and plots a chosen output, for example the critical-stenosis
+    flow curve.
+* **Scenarios:** presets such as healthy, 50/70/85% stenosis, tortuous, narrow, stiffened and soft
+  hydrogel.
+* **Export:** STL (mm, with wall/inlet/outlet patches), CSV profiles, JSON, PNG, and a shareable link.
+  The link encodes the current settings in the URL.
+
+`app/model.js` is a line-for-line port of the Python engine below. They agree to within 0.002% on
+flow, Re, ΔP, WSS and Dean number across mixed test cases. Change both together.
+
+## Python engine (batch runs and scripting)
+
+The same model is available as the `bvm` Python package. Use it for scripted parameter studies and
+for the test suite.
+
 ## Inputs
 
 **Inputs you can vary**
