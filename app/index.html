@@ -139,9 +139,13 @@
         </div>
         <div class="tab-body sens" data-body="sensitivity" hidden>
           <div class="sens-controls">
+            <div class="segmented small" id="sens-mode" role="radiogroup" aria-label="Sensitivity analysis">
+              <button role="radio" data-value="vessel" aria-checked="true">Vessel factors</button>
+              <button role="radio" data-value="aspiration" aria-checked="false">Aspiration</button>
+            </div>
             <label>Vary <select id="sens-x"></select></label>
             <label>Show <select id="sens-y"></select></label>
-            <p class="hint">All other inputs stay at their current values. The dot is the current configuration.</p>
+            <p class="hint" id="sens-hint"></p>
           </div>
           <canvas class="chart" id="c-sens"></canvas>
         </div>

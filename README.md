@@ -32,6 +32,11 @@ Then open http://localhost:8766.
   * *Along the vessel* plots diameter, pressure, Re and WSS along the vessel.
   * *Sensitivity* sweeps any factor and plots a chosen output, for example the critical-stenosis
     flow curve.
+  * *Sensitivity → Aspiration* compares RED 72 and ZOOM 71 head to head. Choose pump vacuum,
+    catheter length or inner diameter as the x-axis, and aspiration flow, tip force index or catheter
+    Re as the output. The estimate is Hagen–Poiseuille for a uniform bore, so flow scales with ID⁴:
+    RED 72's extra 0.001″ gives about 5.8% more flow. Tubing, the clot and proximal ID steps are
+    ignored, so it is a comparative index, not bench data.
 * **Scenarios:** presets such as healthy, 50/70/85% stenosis, tortuous, narrow, stiffened and soft
   hydrogel.
 * **Export:** STL (mm, with wall/inlet/outlet patches), CSV profiles, JSON, PNG, and a shareable link.
