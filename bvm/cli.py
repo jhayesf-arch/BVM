@@ -26,6 +26,11 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     g.add_argument("--occlusion-basis", choices=["diameter", "area"], default="diameter")
     g.add_argument("--stenosis-length-mm", type=float, default=6.0)
     g.add_argument("--wall-thickness-mm", type=float, default=0.3)
+    g.add_argument("--stenosis-center", type=float, default=0.5, help="fraction of arc length")
+    g.add_argument("--taper", type=float, default=1.0, help="outlet/inlet diameter (1.0 = uniform)")
+    g.add_argument("--bulb-pct", type=float, default=0.0, help="peak local dilation, e.g. carotid bulb")
+    g.add_argument("--bulb-center", type=float, default=0.5)
+    g.add_argument("--bulb-length-mm", type=float, default=8.0)
     g = p.add_argument_group("blood and boundary conditions")
     g.add_argument("--mu", type=float, default=0.0035)
     g.add_argument("--rho", type=float, default=1060.0)
@@ -34,16 +39,21 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     g.add_argument("--inlet-pressure-mmhg", type=float, default=85.0)
     g.add_argument("--outflow-pressure-mmhg", type=float, default=10.0)
     g.add_argument("--external-pressure-mmhg", type=float, default=0.0)
+    g.add_argument("--inlet-drop-mmhg", type=float, default=0.0,
+                   help="upstream pressure loss (hypotension / proximal disease); lowers territory flow")
 
 
 def _build(a: argparse.Namespace) -> tuple[Vessel, Blood, FlowConditions]:
     vessel = Vessel(diameter_mm=a.diameter_mm, length_mm=a.length_mm, tortuosity=a.tortuosity,
                     tortuosity_waves=a.tortuosity_waves, occlusion_pct=a.occlusion_pct,
                     occlusion_basis=a.occlusion_basis, stenosis_length_mm=a.stenosis_length_mm,
-                    stiffness_kpa=a.stiffness_kpa, wall_thickness_mm=a.wall_thickness_mm)
+                    stiffness_kpa=a.stiffness_kpa, wall_thickness_mm=a.wall_thickness_mm,
+                    stenosis_center=a.stenosis_center, taper=a.taper, bulb_pct=a.bulb_pct,
+                    bulb_center=a.bulb_center, bulb_length_mm=a.bulb_length_mm)
     flow = FlowConditions(flow_ml_min=a.flow_ml_min, inlet_pressure_mmhg=a.inlet_pressure_mmhg,
                           outflow_pressure_mmhg=a.outflow_pressure_mmhg,
-                          external_pressure_mmhg=a.external_pressure_mmhg, bc=a.bc)
+                          external_pressure_mmhg=a.external_pressure_mmhg, bc=a.bc,
+                          inlet_drop_mmhg=a.inlet_drop_mmhg)
     return vessel, Blood(mu=a.mu, rho=a.rho), flow
 
 

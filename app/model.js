@@ -33,6 +33,14 @@ export const DEFAULTS = Object.freeze({
   heartRate: 70,
   lesion: "icas",     // "icas" (atherosclerotic plaque) or "thrombus" (acute clot); affects rendering + device list
   rigidSpan: null,    // [startMm, endMm] held non-distensible (stented segment); null = none
+  // anatomy (healthy shape; kept in the territory reference vessel)
+  section: "m1",      // anatomical section id (app/anatomy.js)
+  source: "lab",      // geometry source within the section
+  taper: 1,           // outlet / inlet unloaded diameter, linear along arc length
+  bulbPct: 0,         // peak local dilation, % of local diameter (carotid bulb)
+  bulbCenter: 0.5,
+  bulbLengthMm: 8,
+  inletDropMmHg: 0,   // pressure lost upstream (hypotension, proximal disease); calibration ignores it
 });
 
 export function flowRegime(re) {
@@ -57,6 +65,12 @@ export function validate(p) {
   if (p.occlusionPct > 0 && (c - half < -1e-9 || c + half > p.lengthMm + 1e-9))
     errs.push("Stenosis extends past the vessel ends.");
   if (p.inletMmHg <= p.outflowMmHg) errs.push("Inlet pressure must exceed outflow pressure.");
+  if (!(p.taper >= 0.2 && p.taper <= 2)) errs.push("Taper must be in [0.2, 2].");
+  if (!(p.bulbPct >= 0 && p.bulbPct <= 150)) errs.push("Bulb dilation must be in [0, 150]%.");
+  const bh = p.bulbLengthMm / 2, bc = p.bulbCenter * p.lengthMm;
+  if (p.bulbPct > 0 && (bc - bh < -1e-9 || bc + bh > p.lengthMm + 1e-9)) errs.push("Bulb extends past the vessel ends.");
+  if (p.inletDropMmHg < 0 || p.inletMmHg - p.inletDropMmHg <= p.outflowMmHg)
+    errs.push("The upstream pressure drop leaves no driving pressure.");
   return errs;
 }
 
@@ -159,16 +173,21 @@ export function buildGeometry(p, n = 401) {
     B.push([t[1] * q[2] - t[2] * q[1], t[2] * q[0] - t[0] * q[2], t[0] * q[1] - t[1] * q[0]]);
   }
 
-  // cosine stenosis
-  const r0 = (p.diameterMm / 2) * 1e-3, radius = new Float64Array(n).fill(r0);
-  if (p.occlusionPct > 0) {
-    const sc = p.stenosisCenter * L, half = (p.stenosisLengthMm / 2) * 1e-3, depth = 1 - throatRatio(p);
-    for (let i = 0; i < n; i++) {
-      const xi = (s[i] - sc) / half;
-      if (Math.abs(xi) < 1) radius[i] = r0 * (1 - depth * 0.5 * (1 + Math.cos(Math.PI * xi)));
-    }
+  // healthy shape (taper + bulb), then the cosine stenosis relative to the local diameter
+  const r0 = (p.diameterMm / 2) * 1e-3, radius = new Float64Array(n), base = new Float64Array(n);
+  const bump = (si, c, half) => { const xi = (si - c) / half; return Math.abs(xi) < 1 ? 0.5 * (1 + Math.cos(Math.PI * xi)) : 0; };
+  const depth = p.occlusionPct > 0 ? 1 - throatRatio(p) : 0;
+  for (let i = 0; i < n; i++) {
+    let r = r0 * (1 + ((p.taper ?? 1) - 1) * (s[i] / L));
+    if (p.bulbPct > 0) r *= 1 + (p.bulbPct / 100) * bump(s[i], p.bulbCenter * L, (p.bulbLengthMm / 2) * 1e-3);
+    base[i] = r;
+    radius[i] = depth ? r * (1 - depth * bump(s[i], p.stenosisCenter * L, (p.stenosisLengthMm / 2) * 1e-3)) : r;
   }
-  return { s, points: { x: px, y: py, z: pz }, T, N, B, curvature, radius };
+  let throat = 0;
+  for (let i = 1; i < n; i++) {
+    if (depth ? radius[i] / base[i] < radius[throat] / base[throat] : radius[i] < radius[throat]) throat = i;
+  }
+  return { s, points: { x: px, y: py, z: pz }, T, N, B, curvature, radius, base, throat };
 }
 
 export function whiteCurvatureFactor(de) {
@@ -179,8 +198,7 @@ function solveAtFlow(geom, p, q, pIn) {
   const { s, curvature: kappa, radius: r0 } = geom, n = s.length;
   const mu = p.mu, rho = p.rho, pExt = p.externalMmHg * MMHG;
   const eh = p.rigid ? Infinity : p.stiffnessKpa * 1e3 * p.wallMm * 1e-3;
-  let iT = 0;
-  for (let i = 1; i < n; i++) if (r0[i] < r0[iT]) iT = i;
+  const iT = geom.throat, baseRatio = (geom.base[iT] / geom.base[0]) ** 2;
   const sEnd = p.stenosisCenter * p.lengthMm * 1e-3 + (p.stenosisLengthMm / 2) * 1e-3;
 
   let r = Float64Array.from(r0);
@@ -198,7 +216,7 @@ function solveAtFlow(geom, p, q, pIn) {
     }
     let loss = 0;
     if (p.occlusionPct > 0) {
-      const a0 = Math.PI * r[0] ** 2, a1 = Math.PI * r[iT] ** 2;
+      const a0 = Math.PI * r[0] ** 2 * baseRatio, a1 = Math.PI * r[iT] ** 2;
       loss = YOUNG_TSAI_KT * (rho / 2) * (q / a0) ** 2 * (a0 / a1 - 1) ** 2;
     }
     let dp = 0, maxDiff = 0;
@@ -230,18 +248,18 @@ export function solve(p, n = 401) {
   const errs = validate(p);
   if (errs.length) throw new Error(errs.join(" "));
   const geom = buildGeometry(p, n);
-  const pIn = p.inletMmHg * MMHG, q0 = p.flowMlMin * MLMIN;
+  const pCal = p.inletMmHg * MMHG, pIn = (p.inletMmHg - (p.inletDropMmHg ?? 0)) * MMHG, q0 = p.flowMlMin * MLMIN;
   let sol, referenceQ = null;
   if (p.bc === "fixed_flow") {
     sol = solveAtFlow(geom, p, q0, pIn);
   } else {
     const pOut = p.outflowMmHg * MMHG;
     const refP = referenceParams(p);
-    const ref = solveAtFlow(buildGeometry(refP, n), refP, q0, pIn);
+    const ref = solveAtFlow(buildGeometry(refP, n), refP, q0, pCal);
     const rDistal = (ref.pressure[n - 1] - pOut) / q0;
     if (rDistal <= 0) throw new Error("The reference vessel alone drops more pressure than is available.");
     const qMax = (pIn - pOut) / rDistal;
-    const q = bisect((qq) => solveAtFlow(geom, p, qq, pIn).pressure[n - 1] - pOut - rDistal * qq, qMax * 1e-6, qMax, 1e-12);
+    const q = bisect((qq) => solveAtFlow(geom, p, qq, pIn).pressure[n - 1] - pOut - rDistal * qq, qMax * 1e-6, qMax, qMax * 1e-12);
     sol = solveAtFlow(geom, p, q, pIn);
     referenceQ = q0;
   }
@@ -262,7 +280,7 @@ function max(a) { let m = -Infinity; for (const v of a) m = Math.max(m, v); retu
 function min(a) { let m = Infinity; for (const v of a) m = Math.min(m, v); return m; }
 
 export function summarize(res) {
-  const p = res.params, n = res.radius.length, iT = argmin(res.radius);
+  const p = res.params, n = res.radius.length, iT = p.occlusionPct > 0 ? res.geom.throat : argmin(res.radius);
   const dIn = 2 * res.radius[0];
   const reIn = res.reynolds[0], reT = res.reynolds[iT], reMax = max(res.reynolds);
   const omega = (2 * Math.PI * p.heartRate) / 60, nu = p.mu / p.rho;

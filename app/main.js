@@ -2,13 +2,14 @@ import { DEFAULTS, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, solve, th
 import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js";
 import { LineChart, fmt } from "./charts.js";
 import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js";
+import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js";
 
 const $ = (sel) => document.querySelector(sel);
 
 // ───────────────────────── control definitions ─────────────────────────
 const FACTORS = [
   { key: "diameterMm", label: "Luminal diameter", unit: "mm", min: 1.5, max: 5, step: 0.05,
-    hint: "Healthy M1 is roughly 2.5–3.5 mm. Narrower vessels raise shear and resistance." },
+    hint: "Inlet lumen diameter of the selected anatomical section. Narrower vessels raise shear and resistance." },
   { key: "tortuosity", label: "Tortuosity index", unit: "", min: 1, max: 1.6, step: 0.01,
     hint: "Arc length ÷ end-to-end distance. 1.00 is straight; the vessel length stays fixed." },
   { key: "occlusionPct", label: "Occlusion", unit: "%", min: 0, max: 95, step: 1,
@@ -21,6 +22,8 @@ const BC_CONTROLS = {
     { key: "flowMlMin", label: "Healthy reference flow", unit: "mL/min", min: 40, max: 250, step: 1 },
     { key: "inletMmHg", label: "Inlet pressure", unit: "mmHg", min: 40, max: 150, step: 1 },
     { key: "outflowMmHg", label: "Venous / ICP back-pressure", unit: "mmHg", min: 0, max: 30, step: 1 },
+    { key: "inletDropMmHg", label: "Upstream pressure loss", unit: "mmHg", min: 0, max: 60, step: 1,
+      hint: "Systemic hypotension or proximal disease. The territory was calibrated without it, so it lowers perfusion." },
   ],
   fixed_flow: [
     { key: "flowMlMin", label: "Volumetric flow Q", unit: "mL/min", min: 40, max: 250, step: 1 },
@@ -32,15 +35,25 @@ const BC_HINT = {
   fixed_flow: "Flow is held constant whatever the geometry. Use it to isolate local shear, Re and pressure loss.",
 };
 const ADVANCED = [
-  { key: "stenosisLengthMm", label: "Stenosis length", unit: "mm", min: 2, max: 12, step: 0.5 },
+  { key: "stenosisLengthMm", label: "Stenosis length", unit: "mm", min: 1, max: 30, step: 0.5 },
   { key: "stenosisCenter", label: "Stenosis position", unit: "", min: 0.1, max: 0.9, step: 0.01, display: (v, p) => `${(v * p.lengthMm).toFixed(1)}`, unitFn: () => "mm" },
   { key: "waves", label: "Number of bends", unit: "", min: 0.5, max: 3, step: 0.5 },
-  { key: "lengthMm", label: "Segment length", unit: "mm", min: 10, max: 40, step: 1 },
-  { key: "wallMm", label: "Wall thickness", unit: "mm", min: 0.1, max: 1, step: 0.05 },
   { key: "externalMmHg", label: "External pressure", unit: "mmHg", min: 0, max: 30, step: 1 },
   { key: "mu", label: "Blood viscosity μ", unit: "Pa·s", min: 0.002, max: 0.006, step: 0.0001 },
   { key: "rho", label: "Blood density ρ", unit: "kg/m³", min: 1000, max: 1100, step: 1 },
   { key: "heartRate", label: "Heart rate (Womersley)", unit: "bpm", min: 40, max: 150, step: 1 },
+];
+
+// Anatomy-tab shape controls (healthy geometry of the section)
+const SHAPE = [
+  { key: "lengthMm", label: "Segment length", unit: "mm", min: 10, max: 40, step: 1 },
+  { key: "taper", label: "Taper (outlet ÷ inlet diameter)", unit: "", min: 0.4, max: 1.2, step: 0.01,
+    hint: "1.00 is a uniform tube. Below 1 the vessel narrows downstream." },
+  { key: "bulbPct", label: "Bulb dilation", unit: "%", min: 0, max: 80, step: 1,
+    hint: "Peak local widening, e.g. the carotid sinus. 0 = none." },
+  { key: "bulbCenter", label: "Bulb position", unit: "", min: 0.1, max: 0.9, step: 0.01, display: (v, p) => `${(v * p.lengthMm).toFixed(1)}`, unitFn: () => "mm" },
+  { key: "bulbLengthMm", label: "Bulb length", unit: "mm", min: 2, max: 30, step: 0.5 },
+  { key: "wallMm", label: "Wall thickness", unit: "mm", min: 0.02, max: 1, step: 0.01 },
 ];
 
 const PRESETS = [
@@ -68,7 +81,8 @@ const FIELDS = {
   strain: { label: "Wall strain (%)", cmap: "viridis", zero: true, floor: 10 },
 };
 
-const SENS_X = FACTORS.map((f) => ({ key: f.key, label: `${f.label}${f.unit ? ` (${f.unit})` : ""}` }));
+const SENS_X = [...FACTORS, BC_CONTROLS.territory[3], SHAPE[1]].map((f) => ({ key: f.key, label: `${f.label}${f.unit ? ` (${f.unit})` : ""}` }));
+const sensDef = (key) => [...FACTORS, ...BC_CONTROLS.territory, ...SHAPE].find((f) => f.key === key);
 const SENS_Y = [
   { key: "flow_pct", label: "Flow, % of healthy", get: (s) => (s.flow_fraction ?? 1) * 100, bands: true },
   { key: "Q_mL_min", label: "Flow (mL/min)", get: (s) => s.Q_mL_min },
@@ -78,7 +92,16 @@ const SENS_Y = [
   { key: "Pd_Pa", label: "Pd / Pa", get: (s) => s.Pd_Pa },
   { key: "wss_max", label: "Peak WSS (Pa)", get: (s) => s.wss_max },
   { key: "V_throat", label: "Throat velocity (m/s)", get: (s) => s.V_throat },
+  { key: "post_pct", label: "Flow after device, % of healthy", post: true, bands: true, get: (s, b) => (b.flow_fraction ?? 1) * 100 },
+  { key: "restored", label: "Flow restored, % of deficit", post: true, get: (s, b) => restoredPct(s, b) ?? NaN },
 ];
+
+// share of the flow deficit recovered by the device; null when there is no deficit to recover
+function restoredPct(a, b) {
+  if (a.flow_fraction == null || b?.flow_fraction == null) return null;
+  const deficit = 1 - a.flow_fraction;
+  return deficit < 0.01 ? null : ((b.flow_fraction - a.flow_fraction) / deficit) * 100;
+}
 
 // ───────────────────────── state ─────────────────────────
 let params = { ...DEFAULTS, ...readHash() };
@@ -124,7 +147,7 @@ function makeControl(f, container, { primary = false } = {}) {
   num.addEventListener("change", () => {
     let v = parseFloat(num.value);
     if (!isFinite(v)) return sync();
-    if (f.key === "stenosisCenter") v = v / params.lengthMm;
+    if (f.key === "stenosisCenter" || f.key === "bulbCenter") v = v / params.lengthMm;
     set(f.key, Math.min(Math.max(v, f.min), f.max));
   });
   controls.set(f.key, { sync, wrap });
@@ -165,13 +188,13 @@ function buildControls() {
   }
   const adv = $("#advanced");
   for (const f of ADVANCED) makeControl(f, adv);
-  $("#bc").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) set("bc", b.dataset.value); });
+  for (const f of SHAPE) makeControl(f, $("#shape"));
   renderBcControls();
 }
 
 function renderBcControls() {
   const host = $("#bc-controls");
-  for (const key of ["flowMlMin", "inletMmHg", "outflowMmHg"]) controls.delete(key);
+  for (const key of ["flowMlMin", "inletMmHg", "outflowMmHg", "inletDropMmHg"]) controls.delete(key);
   host.innerHTML = "";
   for (const f of BC_CONTROLS[params.bc]) makeControl(f, host);
   $("#bc").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === params.bc));
@@ -181,14 +204,46 @@ function renderBcControls() {
 
 function syncControls() { for (const c of controls.values()) c.sync(); }
 
+function clampParams(q) {
+  // keep the stenosis and bulb inside the vessel, and leave some driving pressure
+  for (const [len, ctr] of [["stenosisLengthMm", "stenosisCenter"], ["bulbLengthMm", "bulbCenter"]]) {
+    if (q[len] / 2 / q.lengthMm >= 0.5) q[len] = q.lengthMm * 0.9;
+    const h = q[len] / 2 / q.lengthMm;
+    q[ctr] = Math.min(Math.max(q[ctr], h), 1 - h);
+  }
+  if (q.basis === "diameter" && q.occlusionPct > 95) q.occlusionPct = 95;
+  q.inletDropMmHg = Math.min(q.inletDropMmHg, q.inletMmHg - q.outflowMmHg - 2);
+  return q;
+}
+
+// Slider ranges follow the selected anatomical section (a perforator is 0.1–1.3 mm, a carotid 4–9 mm).
+function applySectionRanges(sec) {
+  const setR = (f, [min, max, step]) => Object.assign(f, { min, max, step });
+  setR(FACTORS[0], sec.ranges.diameterMm);
+  for (const list of Object.values(BC_CONTROLS)) setR(list[0], sec.ranges.flowMlMin);
+  setR(SHAPE[0], sec.ranges.lengthMm);
+}
+
+function rebuildControls() {
+  controls.clear();
+  for (const id of ["#factors", "#advanced", "#shape"]) $(id).innerHTML = "";
+  buildControls();
+}
+
+function applySection(secId, srcId, extra = {}) {
+  const sec = sectionById(secId);
+  srcId = sec.sources.some((s) => s.id === srcId) ? srcId : sec.sources[0].id;
+  params = clampParams({ ...DEFAULTS, bc: params.bc, lesion: params.lesion, ...sectionParams(sec, srcId), source: srcId, ...extra });
+  const dev = deviceById(deviceId);
+  if (dev && dev.lesion !== params.lesion) { deviceId = null; panelOpen = false; }
+  applySectionRanges(sec);
+  rebuildControls();
+  lockedRange = null;
+  schedule();
+}
+
 function set(key, value) {
-  params = { ...params, [key]: value };
-  // keep the stenosis inside the vessel
-  const half = params.stenosisLengthMm / 2 / params.lengthMm;
-  if (half >= 0.5) params.stenosisLengthMm = params.lengthMm * 0.9;
-  const h = params.stenosisLengthMm / 2 / params.lengthMm;
-  params.stenosisCenter = Math.min(Math.max(params.stenosisCenter, h), 1 - h);
-  if (params.basis === "diameter" && params.occlusionPct > 95) params.occlusionPct = 95;
+  params = clampParams({ ...params, [key]: value });
   if (key === "bc") renderBcControls();
   $("#preset").value = "";
   syncControls();
@@ -242,6 +297,9 @@ function compute() {
   viewer.setProbe(probeFrac);
   renderDeviceBar(dev);
   renderDevicePanel(dev);
+  renderAnatomy();
+  updateRestoration(dev);
+  syncSensOptions(dev);
   updateLegend(meta, range);
   updateCharts();
   updateResults();
@@ -252,7 +310,7 @@ function compute() {
 let lastGeomKey = "";
 function geometryChanged() {
   // reframe the camera only when the overall shape changes a lot (length/tortuosity/bends)
-  const key = `${params.lengthMm}|${params.tortuosity > 1.0001}|${params.waves}`;
+  const key = `${params.section}|${params.lengthMm}|${params.tortuosity > 1.0001}|${params.waves}`;
   const changed = key !== lastGeomKey;
   lastGeomKey = key;
   return changed;
@@ -312,23 +370,6 @@ function updateResults() {
     note.textContent = `Laminar everywhere (Re < 2000). Inertia dominates viscosity ${S.Re_max >= 100 ? "moderately" : "only weakly"}; the Dean number is ${S.Dean_max.toFixed(0)}${S.Dean_max > 11.6 ? ", so bends add secondary swirl and extra loss" : ""}.`;
   }
 
-  // perfusion
-  const card = $("#perfusion-card");
-  $("#flow").innerHTML = `${S.Q_mL_min.toFixed(1)}<span class="muted" style="font-size:13px"> mL/min</span>`;
-  if (S.flow_fraction != null) {
-    card.classList.remove("disabled");
-    const pct = S.flow_fraction * 100;
-    $("#flow-frac").textContent = `${pct.toFixed(0)}% of healthy`;
-    badge($("#band"), S.ischemia_band);
-    const color = { normal: "var(--ok)", oligemia: "var(--warn)", "penumbra-range": "var(--orange)", "core-range": "var(--bad)" }[S.ischemia_band];
-    Object.assign($("#flow-meter").style, { width: `${Math.min(pct, 100)}%`, background: color });
-  } else {
-    card.classList.add("disabled");
-    $("#flow-frac").textContent = "flow is prescribed";
-    badge($("#band"), "", "switch to Brain territory");
-    Object.assign($("#flow-meter").style, { width: "100%", background: "#3a4658" });
-  }
-
   const rows = [
     ["Mean velocity, inlet", `${fmt(S.V_inlet)} m/s`],
     ["Mean velocity, throat", hasSten ? `${fmt(S.V_throat)} m/s` : "—"],
@@ -353,6 +394,56 @@ function updateResults() {
   $("#motion-pill").textContent = `· particles ${SLOW_MOTION}× slow-motion`;
 }
 
+const qFmt = (q) => (q < 1 ? q.toFixed(3) : q < 10 ? q.toFixed(2) : q.toFixed(1));
+const BAND_COLOR = { normal: "var(--ok)", oligemia: "var(--warn)", "penumbra-range": "var(--orange)", "core-range": "var(--bad)" };
+
+function updateRestoration(dev) {
+  const card = $("#restore-card"), a = pre.summary, b = post?.summary;
+  $("#flow-before").innerHTML = `${qFmt(a.Q_mL_min)}<small> mL/min</small>`;
+  $("#after-dev").textContent = dev ? `· ${dev.name}` : "";
+  const meterA = $("#meter-after"), meterB = $("#meter-before");
+  if (a.flow_fraction == null) {
+    card.classList.add("disabled");
+    $("#frac-before").textContent = "flow is prescribed";
+    $("#flow-after").innerHTML = b ? `${qFmt(b.Q_mL_min)}<small> mL/min</small>` : "—";
+    $("#frac-after").textContent = b ? "flow is prescribed" : "no device";
+    badge($("#restored"), "", "switch to Brain territory");
+    badge($("#band"), "", "—");
+    meterA.style.width = "0"; meterB.style.width = "0";
+    $("#restore-note").textContent = "Restoration needs the Brain territory boundary condition. With fixed flow the device cannot change Q, only ΔP, shear and Re.";
+    return;
+  }
+  card.classList.remove("disabled");
+  const fa = a.flow_fraction * 100, refQ = a.Q_mL_min / a.flow_fraction;
+  $("#frac-before").textContent = `${fa.toFixed(0)}% of healthy`;
+  meterB.style.width = `${Math.min(fa, 100)}%`;
+  if (!b) {
+    $("#flow-after").innerHTML = "—";
+    $("#frac-after").textContent = "pick a device";
+    Object.assign(meterA.style, { width: `${Math.min(fa, 100)}%`, background: BAND_COLOR[a.ischemia_band] });
+    const deficit = refQ - a.Q_mL_min;
+    badge($("#restored"), "", deficit > 0.01 * refQ ? `deficit ${qFmt(deficit)} mL/min` : "no flow deficit");
+    badge($("#band"), a.ischemia_band);
+    $("#restore-note").textContent = deficit > 0.01 * refQ
+      ? "Choose a device in the viewport bar (Plaque → angioplasty/stent, Clot → thrombectomy) to model how much of this deficit it recovers."
+      : "The vessel carries its healthy reference flow. Add an occlusion or upstream pressure loss to create a deficit.";
+    return;
+  }
+  const fb = b.flow_fraction * 100, r = restoredPct(a, b);
+  $("#flow-after").innerHTML = `${qFmt(b.Q_mL_min)}<small> mL/min</small>`;
+  $("#frac-after").textContent = `${fb.toFixed(0)}% of healthy`;
+  Object.assign(meterA.style, { width: `${Math.min(fb, 100)}%`, background: BAND_COLOR[b.ischemia_band] });
+  if (r == null) badge($("#restored"), "", "no flow deficit to restore");
+  else badge($("#restored"), r >= 90 ? "restored-good" : r >= 50 ? "restored-part" : "restored-poor", `restored ${Math.max(r, 0).toFixed(0)}% of deficit`);
+  badge($("#band"), b.ischemia_band, `after: ${b.ischemia_band.replace("-", " ")}`);
+  const gain = b.Q_mL_min - a.Q_mL_min;
+  const failed = !dev.balloon && !dev.stent && !deviceOpts.success;
+  const remaining = fb < 99 && !failed ? ` The remaining ${(100 - fb).toFixed(0)}% gap comes from the residual narrowing after treatment${params.inletDropMmHg > 0 ? " and the upstream pressure loss" : ""}.` : "";
+  $("#restore-note").textContent = failed
+    ? "Pass set as unsuccessful: the clot stays, so flow is unchanged."
+    : `${gain >= 0 ? "+" : ""}${qFmt(gain)} mL/min after treatment.${remaining} The bar's white line marks flow before treatment.`;
+}
+
 function updateProbe() {
   if (!result) return;
   const n = result.radius.length, i = Math.round(probeFrac * (n - 1));
@@ -370,6 +461,73 @@ function updateProbe() {
     ["Dean number", fmt(result.dean[i])],
   ];
   $("#probe-metrics").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+}
+
+// ───────────────────────── anatomy ─────────────────────────
+const BASIS_ROWS = [
+  ["diameterMm", "Inlet diameter", (p) => `${+p.diameterMm.toFixed(2)} mm`],
+  ["taper", "Outlet diameter", (p) => `${+(p.diameterMm * p.taper).toFixed(2)} mm`],
+  ["bulbPct", "Bulb peak", (p) => (p.bulbPct > 0 ? `+${p.bulbPct.toFixed(0)}%` : "none")],
+  ["lengthMm", "Length", (p) => `${+p.lengthMm.toFixed(1)} mm`],
+  ["tortuosity", "Tortuosity", (p) => p.tortuosity.toFixed(2)],
+  ["wallMm", "Wall", (p) => `${+p.wallMm.toFixed(2)} mm`],
+  ["flowMlMin", "Healthy flow", (p) => `${qFmt(p.flowMlMin)} mL/min`],
+  ["inletMmHg", "Inlet pressure", (p) => `${p.inletMmHg.toFixed(0)} mmHg`],
+];
+let anatomyKey = "";
+
+function buildAnatomy() {
+  $("#sections").innerHTML = SECTIONS.map((s, i) =>
+    `<button role="radio" data-sec="${s.id}"><span>${esc(s.name)}</span><small>${i + 1}</small></button>`).join("");
+  $("#sections").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (b && b.dataset.sec !== params.section) applySection(b.dataset.sec);
+  });
+  $("#geom-source").addEventListener("change", (e) => applySection(params.section, e.target.value));
+  $("#section-scenarios").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const sec = sectionById(params.section);
+    applySection(sec.id, params.source, sec.scenarios[+b.dataset.i].p);
+  });
+  document.querySelectorAll(".side-tabs button").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll(".side-tabs button").forEach((x) => { x.classList.toggle("active", x === b); x.setAttribute("aria-selected", x === b); });
+    document.querySelectorAll(".side-body").forEach((x) => (x.hidden = x.dataset.sideBody !== b.dataset.side));
+  }));
+}
+
+function renderAnatomy() {
+  const sec = sectionById(params.section), srcId = params.source;
+  $("#side-section").textContent = sec.short;
+  $("#sections").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.sec === sec.id));
+  if (anatomyKey !== `${sec.id}|${srcId}`) {
+    anatomyKey = `${sec.id}|${srcId}`;
+    $("#section-why").textContent = sec.why;
+    $("#geom-source").innerHTML = sec.sources.map((s) => `<option value="${s.id}">${esc(s.label)}</option>`).join("");
+    $("#section-scenarios").innerHTML = sec.scenarios.map((s, i) => `<button data-i="${i}">${esc(s.name)}</button>`).join("");
+    const keys = new Set();
+    for (const src of sec.sources) Object.values(src.basis).forEach((b) => b[2] && keys.add(b[2]));
+    Object.values(sec.common.basis).forEach((b) => b[2] && keys.add(b[2]));
+    sec.scenarios.forEach((s) => Object.values(s.basis ?? {}).forEach((b) => b[2] && keys.add(b[2])));
+    $("#section-refs").innerHTML = [...keys].map((k) => `<li><a href="${REFS[k].url}" target="_blank" rel="noopener">${esc(REFS[k].label)}</a></li>`).join("");
+    $("#section-note").textContent = {
+      carotid: "Only the CCA → bulb → ICA path is modeled; the ECA branch, flow separation and recirculation in the bulb need 3D CFD (export the STL). Stenosis % is relative to the local bulb (ECST-like). The device catalog is intracranial, so its sizing checks will flag the carotid.",
+      lsa: "Perforators are far smaller than any thrombectomy device; the catalog's sizing checks will flag them. Re is in single digits, so flow here is purely viscous.",
+      watershed: "The territory has no autoregulation or leptomeningeal collaterals, so a pressure drop maps straight into lost flow. That makes this a worst case for the border zone.",
+      m1: "M1 is the lab's reference vessel. Lenticulostriate perforators leave it but are not drawn as branches.",
+      basilar: "Paramedian perforators are not modeled as branches; plaque over their origins is the clinical risk even when basilar flow is preserved.",
+    }[sec.id];
+  }
+  $("#geom-source").value = srcId;
+  const ref = sectionParams(sec, srcId), basis = sectionBasis(sec, srcId);
+  $("#geom-basis").innerHTML = BASIS_ROWS.map(([k, label, show]) => {
+    const b = basis[k];
+    const edited = Math.abs((params[k] ?? 0) - (ref[k] ?? 0)) > 1e-9 || (k === "taper" && Math.abs(params.diameterMm - ref.diameterMm) > 1e-9);
+    const refLink = b?.[2] ? ` <a href="${REFS[b[2]].url}" target="_blank" rel="noopener" title="${esc(REFS[b[2]].label)}">ref</a>` : "";
+    const why = edited ? `<span class="why">Edited from ${esc(BASIS_ROWS.find((r) => r[0] === k)[2](ref))}.</span>`
+      : b ? `<span class="why"><span class="kind ${b[0]}">${b[0]}</span> ${esc(b[1])}${refLink}</span>` : "";
+    return `<tr><td>${label}${why}</td><td class="v${edited ? " edited" : ""}">${show(params)}</td></tr>`;
+  }).join("");
 }
 
 // ───────────────────────── devices ─────────────────────────
@@ -544,11 +702,21 @@ const ASP_Y = [
 const ASP_COLORS = { red72: "#4cc2ff", zoom71: "#f5b041" };
 let sensMode = "vessel";
 
-function fillSensSelects() {
-  const xs = sensMode === "vessel" ? SENS_X : ASP_X, ys = sensMode === "vessel" ? SENS_Y : ASP_Y;
+let sensHasDevice = null;
+function syncSensOptions(dev) {
+  if (sensHasDevice === !!dev) return;
+  sensHasDevice = !!dev;
+  fillSensSelects(true);
+}
+
+function fillSensSelects(keep = false) {
+  const xs = sensMode === "vessel" ? SENS_X : ASP_X;
+  const ys = sensMode === "vessel" ? SENS_Y.filter((o) => !o.post || deviceById(deviceId)) : ASP_Y;
+  const oldX = $("#sens-x").value, oldY = $("#sens-y").value;
   $("#sens-x").innerHTML = xs.map((o) => `<option value="${o.key}">${o.label}</option>`).join("");
   $("#sens-y").innerHTML = ys.map((o) => `<option value="${o.key}">${o.label}</option>`).join("");
-  $("#sens-x").value = sensMode === "vessel" ? "occlusionPct" : "vacuumKpa";
+  $("#sens-x").value = keep && xs.some((o) => o.key === oldX) ? oldX : sensMode === "vessel" ? "occlusionPct" : "vacuumKpa";
+  if (keep && ys.some((o) => o.key === oldY)) $("#sens-y").value = oldY;
   $("#sens-mode").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === sensMode));
 }
 
@@ -604,46 +772,57 @@ function computeSensitivity() {
   sensChart.opts.legend = null;
   $("#sens-hint").textContent = "All other inputs stay at their current values. The dot is the current configuration.";
   const xKey = $("#sens-x").value, y = SENS_Y.find((o) => o.key === $("#sens-y").value);
-  const f = FACTORS.find((o) => o.key === xKey);
+  const f = sensDef(xKey), dev = deviceById(deviceId);
   let hi = f.max;
   if (xKey === "occlusionPct") hi = params.basis === "diameter" ? 92 : 98;
+  if (xKey === "inletDropMmHg") hi = params.inletMmHg - params.outflowMmHg - 5;
   const N = 28, xs = [], ys = [];
+  const evalY = (p, n) => {
+    const a = solve(p, n).summary;
+    if (!y.post) return y.get(a);
+    return y.get(a, solve(treat(dev, p, deviceOpts).post, n).summary);
+  };
   for (let k = 0; k < N; k++) {
     const t = k / (N - 1);
     const v = f.log ? f.min * (hi / f.min) ** t : f.min + t * (hi - f.min);
     const p = { ...params, [xKey]: v, ...(xKey === "stiffnessKpa" ? { rigid: false } : {}) };
     if (validate(p).length) continue;
-    try { const r = solve(p, 161); xs.push(f.log ? Math.log10(v) : v); ys.push(y.get(r.summary)); } catch { /* skip */ }
+    try { const yy = evalY(p, 161); if (isFinite(yy)) { xs.push(f.log ? Math.log10(v) : v); ys.push(yy); } } catch { /* skip */ }
   }
   const curX = f.log ? Math.log10(params[xKey]) : params[xKey];
-  const curY = result ? y.get(result.summary) : null;
+  const curY = pre ? (y.post ? (post ? y.get(pre.summary, post.summary) : null) : y.get(result.summary)) : null;
   sensChart.opts.title = `${y.label} vs ${f.label.toLowerCase()}${f.log ? " (log₁₀ kPa)" : ""}`;
   sensChart.opts.thresholds = y.re ? [{ y: RE_LAMINAR_MAX, label: "laminar limit 2000", color: "#f5b041" }] : [];
   sensChart.opts.bands = y.bands ? [
     { from: 0, to: 20, color: "rgba(255,92,92,.10)" }, { from: 20, to: 40, color: "rgba(255,138,61,.10)" },
     { from: 40, to: 80, color: "rgba(245,176,65,.08)" }, { from: 80, to: 200, color: "rgba(62,207,142,.06)" },
   ] : [];
+  if (y.post) $("#sens-hint").textContent = `Each point applies ${dev.name} with the panel's current settings to the swept vessel. Points with no flow deficit are left out of "% of deficit".`;
   sensChart.set([{ x: xs, y: ys, dots: true }], {
     xLabel: f.log ? "log₁₀ kPa" : f.unit,
-    marker: params.rigid && xKey === "stiffnessKpa" ? null : curY != null ? { x: curX, y: curY } : null,
+    marker: params.rigid && xKey === "stiffnessKpa" ? null : curY != null && isFinite(curY) ? { x: curX, y: curY } : null,
   });
 }
 
 // ───────────────────────── presets, hash, export ─────────────────────────
 function buildPresets() {
   const sel = $("#preset");
-  sel.innerHTML = `<option value="">Custom</option>` + PRESETS.map((p, i) => `<option value="${i}">${p.name}</option>`).join("");
+  sel.innerHTML = `<option value="">Custom</option>` +
+    SECTIONS.map((s) => `<optgroup label="${esc(s.name)}"><option value="s:${s.id}:-1">${esc(s.short)} · healthy</option>${
+      s.scenarios.map((sc, i) => `<option value="s:${s.id}:${i}">${esc(s.short)} · ${esc(sc.name)}</option>`).join("")}</optgroup>`).join("") +
+    `<optgroup label="MCA M1 · parameter studies">${PRESETS.map((p, i) => `<option value="p:${i}">${p.name}</option>`).join("")}</optgroup>`;
   sel.addEventListener("change", () => {
     if (sel.value === "") return;
-    const keepBc = params.bc;
-    params = { ...DEFAULTS, bc: keepBc, ...PRESETS[+sel.value].p };
-    const dev = deviceById(deviceId);
-    if (dev && dev.lesion !== params.lesion) { deviceId = null; panelOpen = false; }
-    renderBcControls();
-    schedule();
+    const [kind, a, b] = sel.value.split(":");
+    if (kind === "s") {
+      const sec = sectionById(a);
+      applySection(sec.id, sec.sources[0].id, +b >= 0 ? sec.scenarios[+b].p : {});
+    } else {
+      applySection("m1", "lab", PRESETS[+a].p);
+    }
     const v = sel.value; requestAnimationFrame(() => (sel.value = v));
   });
-  $("#reset").addEventListener("click", () => { sel.value = "0"; sel.dispatchEvent(new Event("change")); });
+  $("#reset").addEventListener("click", () => { sel.value = "s:m1:-1"; sel.dispatchEvent(new Event("change")); });
 }
 
 function readHash() {
@@ -718,7 +897,7 @@ function buildExport() {
   menu.addEventListener("click", async (e) => {
     const kind = e.target.dataset.export;
     if (!kind || !result) return;
-    const tag = `mca_D${params.diameterMm}_TI${params.tortuosity}_occ${params.occlusionPct.toFixed(0)}_E${params.rigid ? "rigid" : Math.round(params.stiffnessKpa)}`;
+    const tag = `${params.section}_D${params.diameterMm}_TI${params.tortuosity}_occ${params.occlusionPct.toFixed(0)}_E${params.rigid ? "rigid" : Math.round(params.stiffnessKpa)}`;
     if (kind === "stl") download(`${tag}.stl`, stl(), "model/stl");
     if (kind === "csv") download(`${tag}_profiles.csv`, csv(), "text/csv");
     if (kind === "json") download(`${tag}.json`, JSON.stringify({
@@ -751,7 +930,11 @@ function wireDisplay() {
   }));
 }
 
+applySectionRanges(sectionById(params.section));
+params = clampParams(params);
 buildControls();
+buildAnatomy();
+$("#bc").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) set("bc", b.dataset.value); });
 buildPresets();
 buildSensitivity();
 buildExport();

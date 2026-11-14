@@ -1,7 +1,8 @@
 # BVM: parametric 3D vessel model for ischemic disease
 
-A computational companion to blood-vessel-mimic (BVM) work. It builds a 3D model of a native middle
-cerebral artery (M1) segment, solves steady hemodynamics on it, and exports CFD/print-ready geometry.
+A computational companion to blood-vessel-mimic (BVM) work. It builds a 3D model of a native cerebral
+artery segment (the middle cerebral artery M1 by default, plus four other stroke-prone sections with
+literature geometry), solves steady hemodynamics on it, and exports CFD/print-ready geometry.
 It is meant to support New Approach Methods (NAMs): you can sweep the same parameters you control
 on the bench (lumen size, curvature, stenosis, substrate stiffness) and see how they change shear,
 pressure, Reynolds number and distal perfusion.
@@ -26,8 +27,11 @@ Then open http://localhost:8766.
 * **Reynolds number:** shown at the inlet and at the stenosis throat on a log-scale bar with the
   laminar (< 2000), transitional (2000–4000) and turbulent (≥ 4000) zones, plus a post-stenotic
   disturbance warning.
-* **Distal perfusion:** in Brain territory mode, territory flow as a percentage of healthy, with
-  normal, oligemia, penumbra-range and core-range bands.
+* **Flow restoration (top of the results):** in Brain territory mode, territory flow before and
+  after the selected device, each as a % of the section's healthy flow, with normal, oligemia,
+  penumbra-range and core-range bands. *Restored* is the share of the flow deficit recovered,
+  (after − before) ÷ (healthy − before). This is volumetric flow in the modeled vessel, not an
+  angiographic eTICI grade.
 * **Charts:**
   * *Along the vessel* plots diameter, pressure, Re and WSS along the vessel.
   * *Sensitivity* sweeps any factor and plots a chosen output, for example the critical-stenosis
@@ -37,8 +41,39 @@ Then open http://localhost:8766.
     Re as the output. The estimate is Hagen–Poiseuille for a uniform bore, so flow scales with ID⁴:
     RED 72's extra 0.001″ gives about 5.8% more flow. Tubing, the clot and proximal ID steps are
     ignored, so it is a comparative index, not bench data.
-* **Scenarios:** presets such as healthy, 50/70/85% stenosis, tortuous, narrow, stiffened and soft
-  hydrogel.
+  * The sensitivity sweep can also vary the *upstream pressure loss* and *taper*, and, with a device
+    selected, plot *flow after device* or *flow restored* against any factor.
+* **Scenarios:** grouped by anatomical section (below), plus the M1 parameter studies (50/70/85%
+  stenosis, tortuous, narrow, stiffened, soft hydrogel).
+
+### Anatomy tab: five stroke-prone sections
+
+The left panel's **Anatomy** tab swaps the vessel for one of five sections. Each has one or more
+geometry sources, and every value is labeled **measured** (from the cited study), **derived**
+(computed from measured values, with the formula shown) or **assumed** (our choice, editable). Edited
+values are highlighted against the source. The shape controls add **taper** (outlet ÷ inlet
+diameter), a cosine **bulb** dilation and wall thickness. Slider ranges follow the section.
+
+| Section | Geometry sources | Healthy flow | Section scenarios |
+|---|---|---|---|
+| MCA M1 | Lab baseline (3.0 mm × 20 mm, 120 mL/min); Żurada 2011 CTA (2.23 × 15.6 mm); 554 angiograms (2.39 × 15.6 mm) | 153 mL/min, the mean of L/R MCA in Amin-Hanjani 2015 (PC-MRA, ~320 adults) | embolic occlusion, 75% / 85% ICAS |
+| Lateral lenticulostriate | 0.2 / 0.4 / 0.8 mm, within the 0.10–1.28 mm cast range (Marinković) | derived: 4.5 cm/s (7T flow MRI, Bouvy 2016) × lumen area ≈ 0.34 mL/min at 0.4 mm | lipohyalinosis (diffuse 50%), origin microatheroma 70%, branch occlusion |
+| ICA bifurcation & carotid bulb | CCA 6.1 mm (ultrasound) tapering by the ICA/CCA ratio 0.81 (young) or 0.77 (older) from Thomas 2005; bulb +30% *assumed* | ICA 257 mL/min (Amin-Hanjani 2015) | bulb plaque 50 / 70 / 90% |
+| Watershed distal cortical branch | 1.5 mm (angular) or 0.8 mm (temporopolar) cortical branch outer diameters; taper 0.6 *assumed* | derived by Murray's law from M1 | tortuous course, hypotension −25 / −40 mmHg, distal embolus |
+| Basilar, proximal & mid | Vitošević 2019 CTA (3.17 × 32.4 mm), MRA n = 100 (3.06 × 31.3 mm), cadaver (3.05 × 25.6 mm) | 138 mL/min (124 at 61–80 y), Amin-Hanjani 2015 | mid-basilar ICAS 70%, thrombosis, dolichoectasia (> 4.5 mm, Smoker 1986) |
+
+Notes and limits:
+
+* **One flow path per section.** The ECA at the carotid bifurcation, the perforators off M1 and the
+  basilar, and the collaterals are not modeled as branches.
+* **Watershed inlet pressure.** It is assumed at 65 mmHg. A 2025 pressure-wire feasibility study
+  (Shoemaker et al., n = 5, under anesthesia) measured 62 ± 29 mmHg in the MCA against 80 ± 18 mmHg
+  radial. The **upstream pressure loss** input then models hypotension. It is applied after the
+  territory is calibrated, and there is no autoregulation, so this is a worst case.
+* **Stenosis % is relative to the local healthy diameter.** In the carotid bulb it is therefore
+  ECST-like, not NASCET.
+* **Bulb flow needs 3D CFD.** Flow separation and recirculation in the bulb are not captured by
+  this model. Export the STL for 3D CFD.
 * **Export:** STL (mm, with wall/inlet/outlet patches), CSV profiles, JSON, PNG, and a shareable link.
   The link encodes the current settings in the URL.
 
@@ -78,8 +113,9 @@ Then open http://localhost:8766.
   The simulator computes the hemodynamic consequence of the resulting lumen. A stented segment is
   treated as non-distensible, which shows the compliance mismatch at the stent edges.
 
-`app/model.js` is a line-for-line port of the Python engine below. They agree to within 0.002% on
-flow, Re, ΔP, WSS and Dean number across mixed test cases. Change both together.
+`app/model.js` is a line-for-line port of the Python engine below. They agree to about 1e-7
+(relative) on flow, Re, ΔP and WSS across mixed test cases, including tapered, bulbed and
+perforator-scale vessels. Change both together.
 
 ## Python engine (batch runs and scripting)
 
@@ -96,6 +132,9 @@ for the test suite.
 | Tortuosity | `--tortuosity` | 1.0 | Tortuosity index = arc length / chord length; 1.0 is a straight vessel. Arc length stays fixed, so only curvature changes |
 | Occlusion | `--occlusion-pct` | 0 | Cosine-shaped stenosis. `--occlusion-basis diameter` (NASCET-style, default) or `area` |
 | Substrate stiffness | `--stiffness-kpa` | 1000 | Young's modulus of the wall/substrate. Use `inf` for a rigid wall |
+| Taper | `--taper` | 1.0 | Outlet ÷ inlet unloaded diameter, linear along the arc length |
+| Bulb | `--bulb-pct`, `--bulb-center`, `--bulb-length-mm` | 0 | Cosine-shaped local dilation, e.g. a carotid sinus |
+| Upstream pressure loss | `--inlet-drop-mmhg` | 0 | Hypotension or proximal disease. Territory BC is calibrated without it, so it lowers perfusion |
 
 **Fixed baseline values**
 
