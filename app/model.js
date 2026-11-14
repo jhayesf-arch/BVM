@@ -41,6 +41,11 @@ export const DEFAULTS = Object.freeze({
   bulbCenter: 0.5,
   bulbLengthMm: 8,
   inletDropMmHg: 0,   // pressure lost upstream (hypotension, proximal disease); calibration ignores it
+  // side branches (e.g. lenticulostriate perforators off M1), evenly spaced between the two fractions
+  nBranches: 6,       // M1 default: lateral lenticulostriate perforators (see app/anatomy.js)
+  branchStart: 0.3,
+  branchEnd: 0.8,
+  branchFlowPct: 1.9, // healthy share of inlet flow taken by all branches together
 });
 
 export function flowRegime(re) {
@@ -69,6 +74,9 @@ export function validate(p) {
   if (!(p.bulbPct >= 0 && p.bulbPct <= 150)) errs.push("Bulb dilation must be in [0, 150]%.");
   const bh = p.bulbLengthMm / 2, bc = p.bulbCenter * p.lengthMm;
   if (p.bulbPct > 0 && (bc - bh < -1e-9 || bc + bh > p.lengthMm + 1e-9)) errs.push("Bulb extends past the vessel ends.");
+  if (!(p.nBranches >= 0) || !(p.branchStart > 0 && p.branchStart <= p.branchEnd && p.branchEnd < 1))
+    errs.push("Branches need 0 < start ≤ end < 1.");
+  if (!(p.branchFlowPct >= 0 && p.branchFlowPct < 100)) errs.push("Branch flow share must be in [0, 100)%.");
   if (p.inletDropMmHg < 0 || p.inletMmHg - p.inletDropMmHg <= p.outflowMmHg)
     errs.push("The upstream pressure drop leaves no driving pressure.");
   return errs;
@@ -187,44 +195,58 @@ export function buildGeometry(p, n = 401) {
   for (let i = 1; i < n; i++) {
     if (depth ? radius[i] / base[i] < radius[throat] / base[throat] : radius[i] < radius[throat]) throat = i;
   }
-  return { s, points: { x: px, y: py, z: pz }, T, N, B, curvature, radius, base, throat };
+  const branchIdx = [];
+  for (let k = 0; k < (p.nBranches ?? 0); k++) {
+    const frac = p.branchStart + ((p.branchEnd - p.branchStart) * (k + 0.5)) / p.nBranches;
+    branchIdx.push(Math.min(Math.max(Math.floor(frac * (n - 1) + 0.5), 1), n - 2));
+  }
+  return { s, points: { x: px, y: py, z: pz }, T, N, B, curvature, radius, base, throat, branchIdx };
 }
 
 export function whiteCurvatureFactor(de) {
   return de > 11.6 ? 1 / (1 - Math.pow(1 - Math.pow(11.6 / de, 0.45), 1 / 0.45)) : 1;
 }
 
-function solveAtFlow(geom, p, q, pIn) {
-  const { s, curvature: kappa, radius: r0 } = geom, n = s.length;
+// Solve at inlet flow q. Side branches either take prescribed flows (opts.branchQ, used to
+// calibrate) or drain through resistances opts.branchR to opts.pOut. Flow is piecewise constant
+// between branch origins; pressure is marched from the inlet so each branch sees the local
+// pressure, including any upstream stenosis loss. Mirrors bvm.hemodynamics._solve_at_flow.
+function solveAtFlow(geom, p, q, pIn, opts = {}) {
+  const { s, curvature: kappa, radius: r0, branchIdx } = geom, n = s.length, nb = branchIdx.length;
+  const { branchQ = null, branchR = null, pOut = 0 } = opts;
   const mu = p.mu, rho = p.rho, pExt = p.externalMmHg * MMHG;
   const eh = p.rigid ? Infinity : p.stiffnessKpa * 1e3 * p.wallMm * 1e-3;
-  const iT = geom.throat, baseRatio = (geom.base[iT] / geom.base[0]) ** 2;
+  const iT = geom.throat, baseRatio = (geom.base[iT] / geom.base[0]) ** 2, occ = p.occlusionPct > 0;
   const sEnd = p.stenosisCenter * p.lengthMm * 1e-3 + (p.stenosisLengthMm / 2) * 1e-3;
+  const ramp = new Float64Array(n);
+  if (occ) for (let i = 0; i < n; i++) ramp[i] = Math.min(Math.max((s[i] - s[iT]) / Math.max(sEnd - s[iT], 1e-12), 0), 1);
+  const at = new Map();
+  branchIdx.forEach((idx, k) => at.set(idx, [...(at.get(idx) ?? []), k]));
 
   let r = Float64Array.from(r0);
-  const vel = new Float64Array(n), re = new Float64Array(n), dean = new Float64Array(n), fc = new Float64Array(n);
-  const pr = new Float64Array(n), strain = new Float64Array(n), rNew = new Float64Array(n), g = new Float64Array(n);
-  let converged = false;
+  const vel = new Float64Array(n), re = new Float64Array(n), dean = new Float64Array(n), fc = new Float64Array(n), qn = new Float64Array(n);
+  const pr = new Float64Array(n), strain = new Float64Array(n), rNew = new Float64Array(n), bq = new Float64Array(nb);
+  let converged = false, qq = q;
+  const node = (i, qf) => {
+    const v = qf / (Math.PI * r[i] * r[i]), rei = (rho * v * 2 * r[i]) / mu, de = rei * Math.sqrt(r[i] * kappa[i]), f = whiteCurvatureFactor(de);
+    return [v, rei, de, f, ((8 * mu * qf) / (Math.PI * r[i] ** 4)) * f];
+  };
   for (let it = 0; it < 200; it++) {
+    const a0 = Math.PI * r[0] ** 2 * baseRatio;
+    let dp = 0, loss = 0, gPrev = 0, maxDiff = 0;
+    qq = q;
     for (let i = 0; i < n; i++) {
-      const A = Math.PI * r[i] * r[i];
-      vel[i] = q / A;
-      re[i] = (rho * vel[i] * 2 * r[i]) / mu;
-      dean[i] = re[i] * Math.sqrt(r[i] * kappa[i]);
-      fc[i] = whiteCurvatureFactor(dean[i]);
-      g[i] = ((8 * mu * q) / (Math.PI * r[i] ** 4)) * fc[i];
+      if (i > 0) dp += 0.5 * (gPrev + node(i, qq)[4]) * (s[i] - s[i - 1]);  // segment i-1 → i carries qq
+      pr[i] = pIn - dp - loss * ramp[i];
+      for (const k of at.get(i) ?? []) {
+        bq[k] = branchQ ? branchQ[k] : Math.max(0, (pr[i] - pOut) / branchR[k]);
+        qq -= bq[k];
+      }
+      [vel[i], re[i], dean[i], fc[i], gPrev] = node(i, qq);
+      qn[i] = qq;
+      if (occ && i === iT) loss = YOUNG_TSAI_KT * (rho / 2) * (qq / a0) ** 2 * (a0 / (Math.PI * r[iT] ** 2) - 1) ** 2;
     }
-    let loss = 0;
-    if (p.occlusionPct > 0) {
-      const a0 = Math.PI * r[0] ** 2 * baseRatio, a1 = Math.PI * r[iT] ** 2;
-      loss = YOUNG_TSAI_KT * (rho / 2) * (q / a0) ** 2 * (a0 / a1 - 1) ** 2;
-    }
-    let dp = 0, maxDiff = 0;
     for (let i = 0; i < n; i++) {
-      if (i > 0) dp += 0.5 * (g[i] + g[i - 1]) * (s[i] - s[i - 1]);
-      let ramp = 0;
-      if (loss) ramp = Math.min(Math.max((s[i] - s[iT]) / Math.max(sEnd - s[iT], 1e-12), 0), 1);
-      pr[i] = pIn - dp - loss * ramp;
       strain[i] = p.rigid ? 0 : ((pr[i] - pExt) * r0[i]) / eh;
       if (p.rigidSpan && s[i] * 1e3 >= p.rigidSpan[0] - 1e-9 && s[i] * 1e3 <= p.rigidSpan[1] + 1e-9) strain[i] = 0;
       rNew[i] = r0[i] * (1 + Math.max(strain[i], -0.9));
@@ -235,8 +257,8 @@ function solveAtFlow(geom, p, q, pIn) {
   }
   if (!converged) throw new Error("Wall–pressure coupling did not converge: the wall is too soft for this model.");
   const wss = new Float64Array(n);
-  for (let i = 0; i < n; i++) wss[i] = ((4 * mu * q) / (Math.PI * r[i] ** 3)) * fc[i];
-  return { q, radius: r, pressure: pr, velocity: vel, reynolds: re, dean, wss, strain };
+  for (let i = 0; i < n; i++) wss[i] = ((4 * mu * qn[i]) / (Math.PI * r[i] ** 3)) * fc[i];
+  return { q, qOut: qq, branchQ: bq, qNode: qn, radius: r, pressure: pr, velocity: vel, reynolds: re, dean, wss, strain };
 }
 
 function referenceParams(p) {
@@ -249,21 +271,30 @@ export function solve(p, n = 401) {
   if (errs.length) throw new Error(errs.join(" "));
   const geom = buildGeometry(p, n);
   const pCal = p.inletMmHg * MMHG, pIn = (p.inletMmHg - (p.inletDropMmHg ?? 0)) * MMHG, q0 = p.flowMlMin * MLMIN;
+  const pOut = p.outflowMmHg * MMHG, nb = geom.branchIdx.length;
+  const refBq = new Float64Array(nb).fill(nb ? (q0 * p.branchFlowPct) / 100 / nb : 0);
+  let branchR = new Float64Array(0), rDistal = null, ref = null;
+  if (p.bc !== "fixed_flow" || nb) {
+    const refP = referenceParams(p), refGeom = buildGeometry(refP, n);
+    ref = solveAtFlow(refGeom, refP, q0, pCal, { branchQ: refBq });
+    branchR = Float64Array.from(refGeom.branchIdx, (idx, k) => (ref.pressure[idx] - pOut) / refBq[k]);
+    if (branchR.some((R) => !(R > 0)) || ref.pressure[n - 1] - pOut <= 0)
+      throw new Error("The reference vessel alone drops more pressure than is available.");
+    rDistal = (ref.pressure[n - 1] - pOut) / ref.qOut;
+  }
   let sol, referenceQ = null;
+  const opts = { branchR, pOut };
   if (p.bc === "fixed_flow") {
-    sol = solveAtFlow(geom, p, q0, pIn);
+    sol = solveAtFlow(geom, p, q0, pIn, opts);
   } else {
-    const pOut = p.outflowMmHg * MMHG;
-    const refP = referenceParams(p);
-    const ref = solveAtFlow(buildGeometry(refP, n), refP, q0, pCal);
-    const rDistal = (ref.pressure[n - 1] - pOut) / q0;
-    if (rDistal <= 0) throw new Error("The reference vessel alone drops more pressure than is available.");
-    const qMax = (pIn - pOut) / rDistal;
-    const q = bisect((qq) => solveAtFlow(geom, p, qq, pIn).pressure[n - 1] - pOut - rDistal * qq, qMax * 1e-6, qMax, qMax * 1e-12);
-    sol = solveAtFlow(geom, p, q, pIn);
+    let qMax = (pIn - pOut) / rDistal;
+    for (const R of branchR) qMax += (pIn - pOut) / R;
+    const q = bisect((qq) => { const t = solveAtFlow(geom, p, qq, pIn, opts); return t.pressure[n - 1] - pOut - rDistal * t.qOut; },
+      qMax * 1e-6, qMax, qMax * 1e-12);
+    sol = solveAtFlow(geom, p, q, pIn, opts);
     referenceQ = q0;
   }
-  const result = { params: { ...p }, geom, ...sol, referenceQ };
+  const result = { params: { ...p }, geom, ...sol, referenceQ, referenceQOut: ref?.qOut ?? null, referenceBranchQ: refBq };
   result.summary = summarize(result);
   return result;
 }
@@ -273,6 +304,16 @@ function ischemiaBand(frac) {
   if (frac >= 0.4) return "oligemia";
   if (frac >= 0.2) return "penumbra-range";
   return "core-range";
+}
+
+/** Linear interpolation of y(x) at x0 (x ascending), clamped like numpy.interp. */
+export function interp1(x0, x, y) {
+  if (x0 <= x[0]) return y[0];
+  const n = x.length;
+  if (x0 >= x[n - 1]) return y[n - 1];
+  let j = 0;
+  while (x[j + 1] < x0) j++;
+  return y[j] + ((x0 - x[j]) / (x[j + 1] - x[j])) * (y[j + 1] - y[j]);
 }
 
 function argmin(a) { let k = 0; for (let i = 1; i < a.length; i++) if (a[i] < a[k]) k = i; return k; }
@@ -315,9 +356,25 @@ export function summarize(res) {
     area_stenosis_pct: areaSten, diameter_stenosis_pct: 100 * (1 - tr),
     warnings,
   };
+  out.Q_distal_mL_min = res.qOut / MLMIN;
+  out.Q_branches_mL_min = res.branchQ.reduce((a, b) => a + b, 0) / MLMIN;
+  out.branch_mL_min = Array.from(res.branchQ, (b) => b / MLMIN);
+  if (p.occlusionPct > 0) {
+    const sc = p.stenosisCenter * p.lengthMm * 1e-3, half = (p.stenosisLengthMm / 2) * 1e-3;
+    const pa = interp1(sc - half, res.geom.s, res.pressure), pb = interp1(sc + half, res.geom.s, res.pressure);
+    out.dP_lesion_mmHg = (pa - pb) / MMHG;
+    out.Pd_Pa_lesion = pb / pa;
+  }
   if (res.referenceQ != null) {
-    out.flow_fraction = res.q / res.referenceQ;
+    // distal (outlet) flow vs the healthy reference: the primary perfusion endpoint
+    out.flow_fraction = res.qOut / res.referenceQOut;
     out.ischemia_band = ischemiaBand(out.flow_fraction);
+    out.reference_distal_mL_min = res.referenceQOut / MLMIN;
+    const refB = res.referenceBranchQ.reduce((a, b) => a + b, 0);
+    if (res.branchQ.length && refB > 0) {
+      out.branch_fraction = res.branchQ.reduce((a, b) => a + b, 0) / refB;
+      out.branch_fractions = Array.from(res.branchQ, (b, k) => b / res.referenceBranchQ[k]);
+    }
   }
   return out;
 }

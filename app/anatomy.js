@@ -19,6 +19,8 @@ export const REFS = {
     url: pubmed("microsurgical anatomy proximal segments middle cerebral artery 70 hemispheres") },
   marinkovic: { label: "Marinković et al. · lenticulostriate artery casts: 2–12 per side, 0.10–1.28 mm",
     url: pubmed("Marinkovic lenticulostriate arteries anatomy") },
+  lsaArea7T: { label: "7T MRI of lenticulostriate arteries (CADASIL vs controls): total LSA lumen area ≈ 1.08 mm² in controls",
+    url: pubmed("7T MRI lenticulostriate arteries CADASIL cross-sectional area") },
   bouvy2016: { label: "Bouvy et al. 2016, NMR Biomed · 7T flow MRI of perforating arteries (basal ganglia 3.9–5.1 cm/s)",
     url: pubmed("Bouvy 7T perforating arteries blood flow velocity pulsatility") },
   thomas2005: { label: "Thomas et al. 2005, Stroke 36:2450 · carotid bifurcation geometry, 25 young vs 25 older adults",
@@ -44,6 +46,9 @@ export const REFS = {
 const M1_FLOW = 153; // mean of L 159 and R 146 mL/min (Amin-Hanjani 2015, all ages)
 const M1_D = 2.39;   // mm, angiographic mean (554 angiograms)
 const murray = (d) => +(M1_FLOW * (d / M1_D) ** 3).toFixed(1);
+// total lenticulostriate flow: 7T total lumen area (controls) × 7T mean velocity in basal-ganglia perforators
+const LSA_TOTAL = +(1.08e-6 * 0.045 * 6e7).toFixed(1);       // mL/min
+const LSA_SHARE = +((100 * LSA_TOTAL) / M1_FLOW).toFixed(1);  // % of M1 flow
 const lsaFlow = (dMm, vCmS) => +((vCmS / 100) * Math.PI * (dMm / 2e3) ** 2 * 6e7).toFixed(2);
 
 // basis entry helpers: [kind, text, refKey?]
@@ -59,9 +64,12 @@ export const SECTIONS = [
     why: "The most common site of ischemic stroke. It takes the largest share of ICA flow, so emboli from the heart or neck follow that stream and lodge in the proximal horizontal M1.",
     ranges: { diameterMm: [1.5, 5, 0.05], flowMlMin: [40, 250, 1], lengthMm: [10, 40, 1] },
     common: {
-      p: { wallMm: 0.3, inletMmHg: 85, outflowMmHg: 10, taper: 1, bulbPct: 0, tortuosity: 1, waves: 1, stenosisLengthMm: 6, stenosisCenter: 0.5 },
+      p: { wallMm: 0.3, inletMmHg: 85, outflowMmHg: 10, taper: 1, bulbPct: 0, tortuosity: 1, waves: 1, stenosisLengthMm: 6, stenosisCenter: 0.5,
+        nBranches: 6, branchStart: 0.3, branchEnd: 0.8, branchFlowPct: LSA_SHARE },
       basis: {
         inletMmHg: A("Mean pressure at the M1 origin. Wire data show losses even proximally (MCA 62 ± 29 vs radial 80 ± 18 mmHg).", "shoemaker2025"),
+        nBranches: A("6 lateral lenticulostriate perforators (2–12 per side in casts), spread over 30–80% of M1. Their share of flow is derived: " +
+          `total LSA lumen 1.08 mm² × 4.5 cm/s ≈ ${LSA_TOTAL} mL/min ≈ ${LSA_SHARE}% of 153 mL/min`, "lsaArea7T"),
         wallMm: A("Thin-wall estimate for a ~3 mm cerebral artery."),
       },
     },
@@ -230,7 +238,7 @@ export function sectionParams(sec, srcId) {
   const src = sec.sources.find((s) => s.id === srcId) ?? sec.sources[0];
   return {
     section: sec.id, occlusionPct: 0, inletDropMmHg: 0, rigidSpan: null,
-    bulbCenter: 0.5, bulbLengthMm: 8, ...sec.common.p, ...src.p,
+    bulbCenter: 0.5, bulbLengthMm: 8, nBranches: 0, ...sec.common.p, ...src.p,
   };
 }
 

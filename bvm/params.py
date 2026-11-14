@@ -50,6 +50,12 @@ class Vessel:
     bulb_pct: float = 0.0           # peak local dilation, % of the local diameter (e.g. carotid bulb)
     bulb_center: float = 0.5        # bulb location, fraction of arc length
     bulb_length_mm: float = 8.0     # axial length of the cosine-shaped dilation
+    # Side branches (e.g. lenticulostriate perforators off M1), evenly spaced between
+    # branch_start and branch_end (fractions of arc length). Each drains to the outflow
+    # pressure through its own lumped resistance, calibrated on the healthy reference.
+    n_branches: int = 0
+    branch_start: float = 0.3
+    branch_end: float = 0.8
 
     def __post_init__(self) -> None:
         if self.diameter_mm <= 0 or self.length_mm <= 0:
@@ -73,6 +79,8 @@ class Vessel:
         bh, bc = self.bulb_length_mm / 2, self.bulb_center * self.length_mm
         if self.bulb_pct > 0 and (bc - bh < -1e-9 or bc + bh > self.length_mm + 1e-9):
             raise ValueError("bulb extends past the ends of the vessel")
+        if self.n_branches < 0 or not 0.0 < self.branch_start <= self.branch_end < 1.0:
+            raise ValueError("need n_branches >= 0 and 0 < branch_start <= branch_end < 1")
 
     @property
     def throat_radius_ratio(self) -> float:
@@ -114,6 +122,8 @@ class FlowConditions:
     # Pressure lost upstream of the inlet (systemic hypotension, proximal disease). The territory
     # resistance is still calibrated at inlet_pressure_mmhg, so this lowers perfusion.
     inlet_drop_mmhg: float = 0.0
+    # Share of the healthy inlet flow taken by all side branches together (Vessel.n_branches).
+    branch_flow_pct: float = 1.9
 
     def __post_init__(self) -> None:
         if self.bc not in ("fixed_flow", "territory"):
@@ -122,5 +132,7 @@ class FlowConditions:
             raise ValueError("flow_ml_min must be positive")
         if self.inlet_pressure_mmhg <= self.outflow_pressure_mmhg:
             raise ValueError("inlet pressure must exceed outflow pressure")
+        if not 0.0 <= self.branch_flow_pct < 100.0:
+            raise ValueError("branch_flow_pct must be in [0, 100)")
         if self.inlet_drop_mmhg < 0 or self.inlet_pressure_mmhg - self.inlet_drop_mmhg <= self.outflow_pressure_mmhg:
             raise ValueError("inlet_drop_mmhg must be >= 0 and leave the inlet above the outflow pressure")

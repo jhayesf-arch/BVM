@@ -31,6 +31,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     g.add_argument("--bulb-pct", type=float, default=0.0, help="peak local dilation, e.g. carotid bulb")
     g.add_argument("--bulb-center", type=float, default=0.5)
     g.add_argument("--bulb-length-mm", type=float, default=8.0)
+    g.add_argument("--n-branches", type=int, default=0, help="side branches, e.g. 6 lenticulostriates off M1")
+    g.add_argument("--branch-start", type=float, default=0.3)
+    g.add_argument("--branch-end", type=float, default=0.8)
     g = p.add_argument_group("blood and boundary conditions")
     g.add_argument("--mu", type=float, default=0.0035)
     g.add_argument("--rho", type=float, default=1060.0)
@@ -41,6 +44,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     g.add_argument("--external-pressure-mmhg", type=float, default=0.0)
     g.add_argument("--inlet-drop-mmhg", type=float, default=0.0,
                    help="upstream pressure loss (hypotension / proximal disease); lowers territory flow")
+    g.add_argument("--branch-flow-pct", type=float, default=1.9, help="healthy share of inflow taken by all branches")
 
 
 def _build(a: argparse.Namespace) -> tuple[Vessel, Blood, FlowConditions]:
@@ -49,11 +53,12 @@ def _build(a: argparse.Namespace) -> tuple[Vessel, Blood, FlowConditions]:
                     occlusion_basis=a.occlusion_basis, stenosis_length_mm=a.stenosis_length_mm,
                     stiffness_kpa=a.stiffness_kpa, wall_thickness_mm=a.wall_thickness_mm,
                     stenosis_center=a.stenosis_center, taper=a.taper, bulb_pct=a.bulb_pct,
-                    bulb_center=a.bulb_center, bulb_length_mm=a.bulb_length_mm)
+                    bulb_center=a.bulb_center, bulb_length_mm=a.bulb_length_mm, n_branches=a.n_branches,
+                    branch_start=a.branch_start, branch_end=a.branch_end)
     flow = FlowConditions(flow_ml_min=a.flow_ml_min, inlet_pressure_mmhg=a.inlet_pressure_mmhg,
                           outflow_pressure_mmhg=a.outflow_pressure_mmhg,
                           external_pressure_mmhg=a.external_pressure_mmhg, bc=a.bc,
-                          inlet_drop_mmhg=a.inlet_drop_mmhg)
+                          inlet_drop_mmhg=a.inlet_drop_mmhg, branch_flow_pct=a.branch_flow_pct)
     return vessel, Blood(mu=a.mu, rho=a.rho), flow
 
 

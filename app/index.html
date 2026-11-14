@@ -194,8 +194,8 @@
     <aside class="panel results" aria-label="Results" aria-live="polite">
       <section class="card hero restore" id="restore-card">
         <div class="card-head">
-          <h2>Flow restoration</h2>
-          <span class="info" title="Territory flow before and after the selected device, as a share of the healthy reference flow for this section. 'Restored' is the share of the flow deficit recovered: (after − before) ÷ (healthy − before). This is volumetric flow in this vessel, not an angiographic eTICI grade; no collaterals or autoregulation are modeled.">ⓘ</span>
+          <h2>Primary endpoint · distal flow restored</h2>
+          <span class="info" title="Distal (outlet) flow before and after the selected device, as a share of the healthy reference distal flow for this section. 'Restored' is the share of the flow deficit recovered: (after − before) ÷ (healthy − before). Perforator flow is reported separately under secondary endpoints. This is volumetric flow in this vessel, not an angiographic eTICI grade; no collaterals or autoregulation are modeled.">ⓘ</span>
         </div>
         <div class="restore-grid">
           <div>
@@ -219,6 +219,24 @@
           <span class="badge" id="band">—</span>
         </div>
         <p class="note" id="restore-note"></p>
+      </section>
+
+      <section class="card endpoints">
+        <div class="card-head">
+          <h2>Secondary endpoints</h2>
+          <span class="info" title="Treated segment = the lesion plus any stent or balloon span, measured at the same positions before and after so the columns compare like with like.">ⓘ</span>
+        </div>
+        <table class="cmp" id="secondary"></table>
+        <p class="note" id="secondary-note"></p>
+      </section>
+
+      <section class="card endpoints">
+        <div class="card-head">
+          <h2>Safety</h2>
+          <span class="info" title="Screening flags from a reduced-order model. Recirculation and stagnation zones are not resolved (they need 3D CFD); the low-shear length and separation flags mark where to look. Wall contact is a thin-wall estimate of the pressure needed to stretch the wall to the device's nominal diameter, not a device-mechanics simulation.">ⓘ</span>
+        </div>
+        <table class="cmp" id="safety"></table>
+        <ul class="checks" id="safety-flags"></ul>
       </section>
 
       <section class="card">

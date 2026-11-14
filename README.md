@@ -27,11 +27,25 @@ Then open http://localhost:8766.
 * **Reynolds number:** shown at the inlet and at the stenosis throat on a log-scale bar with the
   laminar (< 2000), transitional (2000–4000) and turbulent (≥ 4000) zones, plus a post-stenotic
   disturbance warning.
-* **Flow restoration (top of the results):** in Brain territory mode, territory flow before and
-  after the selected device, each as a % of the section's healthy flow, with normal, oligemia,
-  penumbra-range and core-range bands. *Restored* is the share of the flow deficit recovered,
-  (after − before) ÷ (healthy − before). This is volumetric flow in the modeled vessel, not an
-  angiographic eTICI grade.
+* **Study endpoints (top of the results).** Each is shown before and after the selected device:
+  * **Primary: distal flow restored.** Distal (outlet) flow as a % of the healthy reference distal
+    flow, with the ischemia bands. *Restored* is the share of the flow deficit recovered,
+    (after − before) ÷ (healthy − before). This is volumetric flow in the modeled vessel, not an
+    angiographic eTICI grade.
+  * **Secondary.** These are measured over the *treated segment*, the lesion plus any stent or
+    balloon span, at the same positions before and after:
+    * pressure drop and Pd/Pa across the segment
+    * downstream flow distribution: distal territory against the perforators (deep territory)
+    * mean and peak wall shear stress in the segment
+  * **Safety.** These are screening outputs:
+    * length of vessel with WSS < 0.4 Pa and the minimum WSS (stagnation)
+    * peak WSS and length above 10 Pa (elevated shear)
+    * perforators below 50% of healthy flow
+    * flags for post-stenotic or bulb separation, perforator origins inside plaque or clot, and
+      perforator origins covered by a stent ("snowplow" risk)
+    * for stents and retrievers, a **wall-contact estimate**: the thin-wall pressure needed to stretch
+      the healthy wall to the device's nominal diameter. This is an upper bound, not a
+      device-mechanics simulation. Recirculation itself needs 3D CFD.
 * **Charts:**
   * *Along the vessel* plots diameter, pressure, Re and WSS along the vessel.
   * *Sensitivity* sweeps any factor and plots a chosen output, for example the critical-stenosis
@@ -45,6 +59,18 @@ Then open http://localhost:8766.
     selected, plot *flow after device* or *flow restored* against any factor.
 * **Scenarios:** grouped by anatomical section (below), plus the M1 parameter studies (50/70/85%
   stenosis, tortuous, narrow, stiffened, soft hydrogel).
+
+### Perforator branches (downstream flow distribution)
+
+M1 is modeled with 6 lateral lenticulostriate perforators spread over 30–80% of its length. Each
+drains to the outflow pressure through its own resistance, calibrated so the healthy vessel sends
+1.9% of its inflow into them. That share is derived from a 7T total LSA lumen area of 1.08 mm² ×
+4.5 cm/s ≈ 2.9 mL/min, against 153 mL/min of MCA flow. Flow is piecewise constant between branch
+origins and pressure is marched from the inlet, so each perforator sees the local pressure. A clot
+distal to some origins starves the territory but not those perforators; one proximal to them
+starves both. Count, share and positions are editable in the Anatomy tab. The Python flags are
+`--n-branches`, `--branch-start`, `--branch-end` and `--branch-flow-pct`. Python's default is 0
+branches; the app's M1 default is 6.
 
 ### Anatomy tab: five stroke-prone sections
 
@@ -114,8 +140,8 @@ Notes and limits:
   treated as non-distensible, which shows the compliance mismatch at the stent edges.
 
 `app/model.js` is a line-for-line port of the Python engine below. They agree to about 1e-7
-(relative) on flow, Re, ΔP and WSS across mixed test cases, including tapered, bulbed and
-perforator-scale vessels. Change both together.
+(relative) on flow, Re, ΔP and WSS across mixed test cases, including tapered, bulbed,
+perforator-scale and branched vessels. Change both together.
 
 ## Python engine (batch runs and scripting)
 
