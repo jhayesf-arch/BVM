@@ -91,3 +91,23 @@ def test_branched_vessel_conserves_mass_and_pressure_continuity():
     sol = solve(Vessel(n_branches=8, branch_start=0.1, branch_end=0.9, occlusion_pct=60), flow=fl)
     assert sol.q == pytest.approx(sol.q_out + sol.branch_q.sum(), rel=1e-12)
     assert np.all(np.diff(sol.pressure) <= 1e-9), "pressure must fall monotonically downstream"
+
+
+def test_fixed_point_converges_where_a_branch_switches_on_and_off():
+    """Regression: a perforator just past a 95% throat sits near venous pressure, so its flow toggles at
+    the zero-flow clamp. With fixed relaxation the wall iteration limit-cycled in narrow flow bands.
+    Every trial flow must now converge."""
+    from bvm import Blood
+    from bvm.geometry import build_geometry
+    from bvm.hemodynamics import _reference_vessel, _solve_at_flow
+
+    v = Vessel(diameter_mm=2.0, occlusion_pct=95, stenosis_length_mm=4.0, n_branches=6)
+    fl, b, n = FlowConditions(bc="territory"), Blood(), 161
+    geom = build_geometry(v, n)
+    ref_bq = np.full(6, Q * 0.019 / 6)
+    ref = _solve_at_flow(build_geometry(_reference_vessel(v), n), b, fl, Q, 85 * MMHG_TO_PA, branch_q=ref_bq)
+    p_out = 10 * MMHG_TO_PA
+    br = (ref.pressure[geom.branch_index] - p_out) / ref_bq
+    for q in np.linspace(0.12, 0.16, 401) * Q:   # contains the bands that used to fail (0.1289, 0.1484)
+        _solve_at_flow(geom, b, fl, q, 85 * MMHG_TO_PA, branch_r=br, p_out=p_out)
+    assert 0 < solve(v, flow=fl, n=n).summary()["perfusion"]["territory_flow_fraction"] < 0.02
