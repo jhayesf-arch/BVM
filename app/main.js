@@ -1,7 +1,7 @@
 import { DEFAULTS, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, solve, throatRatio, validate } from "./model.js";
 import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js";
 import { LineChart, fmt } from "./charts.js";
-import { DEVICES, deviceById, defaultOptions, patentUrl, treat } from "./devices.js";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -530,16 +530,79 @@ function wireDevices() {
 }
 
 // ───────────────────────── sensitivity ─────────────────────────
+// Aspiration comparison: Poiseuille estimate swept over one catheter/pump parameter.
+const ASP_X = [
+  { key: "vacuumKpa", label: "Pump vacuum (kPa below atm)", unit: "kPa", min: 20, max: 101 },
+  { key: "catheterLengthCm", label: "Catheter working length (cm)", unit: "cm", min: 90, max: 160 },
+  { key: "idIn", label: "Catheter inner diameter (in)", unit: "in", min: 0.035, max: 0.088 },
+];
+const ASP_Y = [
+  { key: "flowMlMin", label: "Aspiration flow (mL/min)" },
+  { key: "forceN", label: "Tip force index (N)" },
+  { key: "re", label: "Reynolds number in catheter", re: true },
+];
+const ASP_COLORS = { red72: "#4cc2ff", zoom71: "#f5b041" };
+let sensMode = "vessel";
+
+function fillSensSelects() {
+  const xs = sensMode === "vessel" ? SENS_X : ASP_X, ys = sensMode === "vessel" ? SENS_Y : ASP_Y;
+  $("#sens-x").innerHTML = xs.map((o) => `<option value="${o.key}">${o.label}</option>`).join("");
+  $("#sens-y").innerHTML = ys.map((o) => `<option value="${o.key}">${o.label}</option>`).join("");
+  $("#sens-x").value = sensMode === "vessel" ? "occlusionPct" : "vacuumKpa";
+  $("#sens-mode").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === sensMode));
+}
+
 function buildSensitivity() {
-  $("#sens-x").innerHTML = SENS_X.map((o) => `<option value="${o.key}">${o.label}</option>`).join("");
-  $("#sens-y").innerHTML = SENS_Y.map((o) => `<option value="${o.key}">${o.label}</option>`).join("");
-  $("#sens-x").value = "occlusionPct";
+  fillSensSelects();
+  $("#sens-mode").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b || b.dataset.value === sensMode) return;
+    sensMode = b.dataset.value;
+    fillSensSelects();
+    computeSensitivity();
+  });
   $("#sens-x").addEventListener("change", computeSensitivity);
   $("#sens-y").addEventListener("change", computeSensitivity);
 }
 
+function computeAspirationSensitivity() {
+  const x = ASP_X.find((o) => o.key === $("#sens-x").value), y = ASP_Y.find((o) => o.key === $("#sens-y").value);
+  const dev = deviceById(deviceId);
+  const held = dev?.aspiration ? { vacuumKpa: deviceOpts.vacuumKpa, catheterLengthCm: deviceOpts.catheterLengthCm } : { ...ASPIRATION_DEFAULTS };
+  const cats = DEVICES.filter((d) => d.aspiration);
+  const N = 40, grid = Array.from({ length: N }, (_, k) => x.min + ((x.max - x.min) * k) / (N - 1));
+  const est = (idMm, over = {}) => {
+    const o = { ...held, ...over };
+    return aspirationEstimate({ idMm, lengthCm: o.catheterLengthCm, vacuumKpa: o.vacuumKpa, mu: params.mu, rho: params.rho })[y.key];
+  };
+  let series, marker = null;
+  if (x.key === "idIn") {
+    series = [{ x: grid, y: grid.map((v) => est(v * 25.4)), color: "#8a97a8", label: "uniform-bore catheter" }];
+    for (const c of cats) {
+      const idIn = c.sizes[0].idMm / 25.4;
+      series.push({ x: [idIn], y: [est(c.sizes[0].idMm)], color: ASP_COLORS[c.id], dots: true, dotRadius: 5.5, label: `${c.name} (${idIn.toFixed(3)}″)` });
+    }
+  } else {
+    series = cats.map((c) => ({ x: grid, y: grid.map((v) => est(c.sizes[0].idMm, { [x.key]: v })), color: ASP_COLORS[c.id], label: c.name }));
+    if (dev?.aspiration) marker = { x: held[x.key], y: est(dev.sizes[0].idMm) };
+  }
+  sensChart.opts.title = `${y.label} vs ${x.label.replace(/ \(.*\)/, "").toLowerCase()}`;
+  sensChart.opts.thresholds = y.re ? [{ y: RE_LAMINAR_MAX, label: "laminar limit 2000", color: "#f5b041" }] : [];
+  sensChart.opts.bands = [];
+  sensChart.opts.legend = "top-left"; // curves rise to the right, so keep the legend clear of them
+  sensChart.set(series, { xLabel: x.unit, marker });
+  const heldTxt = [x.key !== "vacuumKpa" && `vacuum ${held.vacuumKpa} kPa`, x.key !== "catheterLengthCm" && `length ${held.catheterLengthCm} cm`].filter(Boolean).join(", ");
+  const ratio = (cats[0].sizes[0].idMm / cats[1].sizes[0].idMm) ** 4;
+  $("#sens-hint").textContent = `Hagen–Poiseuille for blood through a uniform-bore catheter (${heldTxt}${dev?.aspiration ? `, from the ${dev.name} panel` : ", defaults"}). ` +
+    `Flow scales with ID⁴, so the 0.001″ ID difference gives RED 72 ${((ratio - 1) * 100).toFixed(1)}% more flow at equal vacuum and length. ` +
+    `Tubing, the clot and proximal ID steps are ignored: a comparative index, not bench data.`;
+}
+
 function computeSensitivity() {
   if ($('[data-body="sensitivity"]').hidden) return;
+  if (sensMode === "aspiration") return computeAspirationSensitivity();
+  sensChart.opts.legend = null;
+  $("#sens-hint").textContent = "All other inputs stay at their current values. The dot is the current configuration.";
   const xKey = $("#sens-x").value, y = SENS_Y.find((o) => o.key === $("#sens-y").value);
   const f = FACTORS.find((o) => o.key === xKey);
   let hi = f.max;

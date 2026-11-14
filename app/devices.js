@@ -131,12 +131,26 @@ export const DEVICES = [
 ];
 
 export const deviceById = (id) => DEVICES.find((d) => d.id === id);
+
+/**
+ * Uniform-bore aspiration estimate for blood through a catheter (Hagen–Poiseuille).
+ * Ignores tubing, the clot and any proximal ID step: a comparative index, not a bench value.
+ * Returns flow (mL/min), catheter Reynolds number, and tip force index (tip area × vacuum, N).
+ */
+export function aspirationEstimate({ idMm, lengthCm, vacuumKpa, mu, rho }) {
+  const r = idMm / 2 / 1e3, len = lengthCm / 100, dp = vacuumKpa * 1e3;
+  const q = (Math.PI * r ** 4 * dp) / (8 * mu * len);
+  const v = q / (Math.PI * r * r);
+  return { flowMlMin: q * 6e7, re: (rho * v * 2 * r) / mu, forceN: Math.PI * r * r * dp };
+}
+
+export const ASPIRATION_DEFAULTS = { vacuumKpa: 98.9, catheterLengthCm: 132 };
 export const patentUrl = GP;
 
 /** Default procedure inputs for a device (all editable in the panel). */
 export function defaultOptions(dev) {
   if (!dev) return {};
-  if (dev.aspiration) return { success: true, residualPct: 0, vacuumKpa: 98.9, catheterLengthCm: 132 };
+  if (dev.aspiration) return { success: true, residualPct: 0, ...ASPIRATION_DEFAULTS };
   if (dev.balloon) return { sizeIdx: null, balloonRatio: 0.8, recoilPct: 15 };
   if (dev.stent) return { sizeIdx: null, residualPct: 31.9, isrPct: 0 };
   return { success: true, residualPct: 0, sizeIdx: null, adjustDiameterMm: null };
@@ -189,12 +203,10 @@ export function treat(dev, p, opts) {
       : "This device treats atherosclerotic stenosis; the lesion is set to acute clot.", "bad");
 
   if (dev.aspiration) {
-    const rId = size.idMm / 2 / 1e3, len = opts.catheterLengthCm / 100, dp = opts.vacuumKpa * 1e3;
-    const q = (Math.PI * rId ** 4 * dp) / (8 * p.mu * len);
-    const v = q / (Math.PI * rId * rId), re = (p.rho * v * 2 * rId) / p.mu;
-    const force = Math.PI * rId * rId * dp;
+    const est = aspirationEstimate({ idMm: size.idMm, lengthCm: opts.catheterLengthCm, vacuumKpa: opts.vacuumKpa, mu: p.mu, rho: p.rho });
+    const re = est.re, force = est.forceN;
     metrics.push(
-      ["Aspiration flow, uniform-bore estimate", `${fmt(q * 6e7, 0)} mL/min`, "Hagen–Poiseuille for blood through the full catheter length at the set vacuum. It ignores tubing, the clot and any proximal ID step, so treat it as a comparative index rather than a bench value."],
+      ["Aspiration flow, uniform-bore estimate", `${fmt(est.flowMlMin, 0)} mL/min`, "Hagen–Poiseuille for blood through the full catheter length at the set vacuum. It ignores tubing, the clot and any proximal ID step, so treat it as a comparative index rather than a bench value."],
       ["Reynolds number in catheter", `${fmt(re, 0)} (${re < 2000 ? "laminar" : "not laminar; estimate invalid"})`],
       ["Tip force index (tip area × vacuum)", `${fmt(force, 3)} N  ·  ${fmt(force / 9.81e-3, 1)} gf`, "Penumbra's 'thrombus removal force' metric."],
       ["Catheter ID / vessel diameter", fmt(size.idMm / D, 2)],

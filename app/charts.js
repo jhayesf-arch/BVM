@@ -119,16 +119,17 @@ export class LineChart {
       ctx.beginPath();
       for (let i = 0; i < s.x.length; i++) (i ? ctx.lineTo : ctx.moveTo).call(ctx, X(s.x[i]), Y(s.y[i]));
       ctx.stroke();
-      if (s.dots) { ctx.fillStyle = s.color || C.line; for (let i = 0; i < s.x.length; i++) { ctx.beginPath(); ctx.arc(X(s.x[i]), Y(s.y[i]), 2.2, 0, 7); ctx.fill(); } }
+      if (s.dots) { ctx.fillStyle = s.color || C.line; for (let i = 0; i < s.x.length; i++) { ctx.beginPath(); ctx.arc(X(s.x[i]), Y(s.y[i]), s.dotRadius || 2.2, 0, 7); ctx.fill(); } }
       ctx.restore();
     }
     // legend
     const labelled = this.series.filter((s) => s.label);
-    let ly = pad.t + ph - 6;
-    ctx.textAlign = "right";
+    const topLeft = this.opts.legend === "top-left";
+    let ly = topLeft ? pad.t + 12 : pad.t + ph - 6;
+    ctx.textAlign = topLeft ? "left" : "right";
     for (const s of labelled) {
-      ctx.fillStyle = s.color || C.line; ctx.fillText(s.label, pad.l + pw - 4, ly);
-      ly -= 13;
+      ctx.fillStyle = s.color || C.line; ctx.fillText(s.label, topLeft ? pad.l + 8 : pad.l + pw - 4, ly);
+      ly += topLeft ? 13 : -13;
     }
 
     // probe cursor
