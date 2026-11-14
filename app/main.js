@@ -3,6 +3,7 @@ import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js";
 import { LineChart, fmt } from "./charts.js";
 import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js";
 import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js";
+import { PatientViewer } from "./patient.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -345,6 +346,7 @@ function updateLegend(meta, [lo, hi]) {
 }
 
 function updateCharts() {
+  if (geomMode === "patient") return;
   const s = Array.from(result.geom.s, (v) => v * 1e3);
   const xr = [0, params.lengthMm];
   charts.diam.set([
@@ -977,6 +979,7 @@ function writeHash() {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (k !== "rigidSpan" && v !== DEFAULTS[k]) q.set(k, typeof v === "boolean" ? (v ? "1" : "0") : String(+(+v).toPrecision(6) || v));
   if (deviceId) { q.set("device", deviceId); q.set("view", view); }
+  if (geomMode === "patient") { q.set("geom", "patient"); q.set("lumen", ptVariant); q.set("ptcolor", ptColor); }
   history.replaceState(null, "", `${location.pathname}${location.search}${q.toString() ? `#${q}` : ""}`);
 }
 
@@ -1033,6 +1036,7 @@ function buildExport() {
   menu.addEventListener("click", async (e) => {
     const kind = e.target.dataset.export;
     if (!kind || !result) return;
+    if (geomMode === "patient" && (await exportPatient(kind))) return;
     const tag = `${params.section}_D${params.diameterMm}_TI${params.tortuosity}_occ${params.occlusionPct.toFixed(0)}_E${params.rigid ? "rigid" : Math.round(params.stiffnessKpa)}`;
     if (kind === "stl") download(`${tag}.stl`, stl(), "model/stl");
     if (kind === "csv") download(`${tag}_profiles.csv`, csv(), "text/csv");
@@ -1050,6 +1054,119 @@ function buildExport() {
       setTimeout(() => (btn.textContent = "Export ▾"), 1600);
     }
   });
+}
+
+// ───────────────────────── patient (CTA) geometry ─────────────────────────
+const PATIENT_SID = "AHMU1218142";
+const patient = new PatientViewer($("#viewport"));
+let geomMode = hashExtras.get("geom") === "patient" ? "patient" : "parametric";
+let ptVariant = hashExtras.get("lumen") ?? "healthy";
+let ptColor = ["patch", "diameter", "wss"].includes(hashExtras.get("ptcolor")) ? hashExtras.get("ptcolor") : "patch";
+let ptManifest = null, ptMeta = null, ptHealthy = null;
+const PT_SHORT = { healthy: "Healthy", occluded_icas70: "ICAS 70%", occluded_thrombus95: "Thrombus 95%",
+  recanalized_thrombectomy: "Thrombectomy", recanalized_angioplasty: "Angioplasty", recanalized_stent: "Stent" };
+
+async function setGeomMode(mode) {
+  geomMode = mode;
+  document.body.classList.toggle("patient-mode", mode === "patient");
+  $("#geom-mode").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === mode));
+  viewer.renderer.domElement.style.visibility = mode === "patient" ? "hidden" : "";
+  patient.setActive(mode === "patient");
+  if (mode === "patient") {
+    document.querySelector('.tabs button[data-tab="profiles"]').click();
+    await renderPatient();
+  } else {
+    document.querySelector(".legend").style.display = "";
+    schedule();
+  }
+  writeHash();
+}
+
+async function renderPatient() {
+  const err = $("#vp-error");
+  try {
+    ptManifest ??= await patient.manifest(PATIENT_SID);
+    if (!ptManifest.variants.some((v) => v.key === ptVariant)) ptVariant = "healthy";
+    ptMeta = await patient.load(PATIENT_SID, ptVariant);
+    err.hidden = true;
+  } catch (e) {
+    err.textContent = `Could not load the patient geometry: ${e.message}`;
+    err.hidden = false;
+    return;
+  }
+  const sel = $("#pt-variant");
+  if (!sel.options.length) sel.innerHTML = ptManifest.variants.map((v) => `<option value="${v.key}">${esc(v.label)}</option>`).join("");
+  sel.value = ptVariant;
+  $("#pt-subject").textContent = ptManifest.subject;
+  $("#pt-color").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === ptColor));
+  // WSS scale fixed to the healthy lumen's range (floor 5 Pa) so lesions read as hot, not rescaled away
+  let range = null;
+  if (ptColor === "wss") {
+    ptHealthy ??= await (await fetch(`data/patient/${PATIENT_SID}/healthy.json`)).json();
+    range = [0, Math.max(5, 3 * Math.max(...ptHealthy.profile.wss_Pa.slice(1, -1)))];
+  } else if (ptColor === "diameter") range = [0, Math.max(...ptMeta.profile.D_healthy_mm)];
+  const used = patient.color(ptColor, range);
+  const legend = document.querySelector(".legend");
+  legend.style.display = used ? "" : "none";
+  if (used) updateLegend({ label: ptColor === "wss" ? "WSS, 1D estimate (Pa)" : "Lumen diameter (mm)", cmap: ptColor === "wss" ? "inferno" : "viridis" }, used);
+  $("#branch-legend").hidden = true;
+  const key = [["#d04a3b", "M1 (lesion site)"], ["#b8665c", "bifurcation + M2"], ["#8a97a8", "flow extensions"],
+    ["#4c8dff", "inlet"], ["#3ecf8e", "outlet 1 (larger M2)"], ["#f5b041", "outlet 2"]];
+  $("#pt-key").innerHTML = (ptColor === "patch" ? key : key.slice(1))
+    .map(([c, l]) => `<span><i style="background:${c}"></i>${l}</span>`).join("") +
+    (ptColor === "patch" ? "" : `<span class="muted">M1 colored by ${ptColor === "wss" ? "Poiseuille WSS at the predicted flow" : "measured lumen diameter"}</span>`);
+  $("#pt-attrib").innerHTML = `${esc(ptManifest.attribution)} <a href="https://doi.org/10.6084/m9.figshare.26965450" target="_blank" rel="noopener">Data</a> · ` +
+    `<a href="https://github.com/jhayesf-arch/BVM/blob/main/docs/cfd-variants-${ptManifest.subject}.md" target="_blank" rel="noopener">How these were built</a>`;
+  renderPatientTable();
+  renderPatientCharts();
+  writeHash();
+}
+
+function renderPatientTable() {
+  const v = ptManifest.variants, by = Object.fromEntries(v.map((x) => [x.key, x]));
+  const restored = (k) => {
+    const pre = by[k.includes("thrombectomy") ? "occluded_thrombus95" : "occluded_icas70"];
+    if (!k.startsWith("recanalized") || !pre) return "—";
+    return `${(100 * (by[k].distal_flow_pct - pre.distal_flow_pct) / (100 - pre.distal_flow_pct)).toFixed(0)}%`;
+  };
+  $("#pt-table").innerHTML = `<thead><tr><th></th><th>Distal flow</th><th>ΔP M1</th><th>Restored</th></tr></thead><tbody>` +
+    v.map((x) => `<tr data-key="${x.key}" class="${x.key === ptVariant ? "sel" : ""}"><td>${PT_SHORT[x.key] ?? x.key}${x.checks_pass ? "" : " ⚠"}</td>` +
+      `<td>${x.distal_flow_pct.toFixed(0)}%</td><td>${x.dP_M1_mmHg.toFixed(1)}</td><td>${restored(x.key)}</td></tr>`).join("") + `</tbody>`;
+  const cur = by[ptVariant];
+  $("#pt-note").textContent = `${cur.label}. ${cur.throat_diameter_mm ? `Measured throat ${cur.throat_diameter_mm.toFixed(2)} mm (${(100 * cur.throat_ratio).toFixed(1)}% of the local diameter). ` : ""}` +
+    `Distal flow ${cur.distal_flow_mL_min.toFixed(1)} mL/min. Device outcomes are prescribed lumens (app's device rules), not simulated device mechanics. Click a row to view it.`;
+}
+
+function renderPatientCharts() {
+  const p = ptMeta.profile, s = p.s_mm, xr = [0, s[s.length - 1]];
+  charts.diam.set([
+    { x: s, y: p.D_healthy_mm, color: "#8a97a8", dashed: true, label: "healthy" },
+    { x: s, y: p.D_mm, label: PT_SHORT[ptVariant] ?? ptVariant },
+  ], { xLabel: "mm along M1", xRange: xr });
+  charts.pres.set([{ x: s, y: p.p_mmHg }], { xLabel: "mm along M1 (re: inlet)", xRange: xr });
+  charts.re.set([{ x: s, y: p.re }], { xLabel: "mm along M1", xRange: xr });
+  charts.wss.set([{ x: s, y: p.wss_Pa }], { xLabel: "mm along M1", xRange: xr });
+}
+
+async function exportPatient(kind) {
+  const tag = `${ptManifest?.subject ?? PATIENT_SID}_${ptVariant}`;
+  if (kind === "stl") { download(`${tag}_ext_in10D_out5D_mm.stl`, await (await fetch(`data/patient/${PATIENT_SID}/${ptVariant}.stl`)).blob(), "model/stl"); return true; }
+  if (kind === "png") { download(`${tag}.png`, patient.snapshot()); return true; }
+  if (kind === "csv") {
+    const p = ptMeta.profile, rows = ["s_mm,D_mm,D_healthy_mm,p_rel_inlet_mmHg,reynolds,wss_Pa"];
+    p.s_mm.forEach((v, i) => rows.push([v, p.D_mm[i], p.D_healthy_mm[i], p.p_mmHg[i], p.re[i], p.wss_Pa[i]].join(",")));
+    download(`${tag}_m1_profile.csv`, rows.join("\n") + "\n", "text/csv");
+    return true;
+  }
+  if (kind === "json") { download(`${tag}.json`, JSON.stringify({ manifest: ptManifest, variant: ptVariant, profile: ptMeta.profile }, null, 2), "application/json"); return true; }
+  return false;
+}
+
+function wirePatient() {
+  $("#geom-mode").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b && b.dataset.value !== geomMode) setGeomMode(b.dataset.value); });
+  $("#pt-variant").addEventListener("change", (e) => { ptVariant = e.target.value; renderPatient(); });
+  $("#pt-color").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { ptColor = b.dataset.value; renderPatient(); } });
+  $("#pt-table").addEventListener("click", (e) => { const r = e.target.closest("tr[data-key]"); if (r) { ptVariant = r.dataset.key; renderPatient(); } });
 }
 
 // ───────────────────────── wiring ─────────────────────────
@@ -1078,8 +1195,10 @@ buildSensitivity();
 buildExport();
 wireDisplay();
 wireDevices();
+wirePatient();
 syncControls();
 compute();
+setGeomMode(geomMode);
 
 // exposed for debugging and the Python parity check
 window.bvm = { solve, stl, get params() { return params; }, get result() { return result; }, throatRatio };

@@ -27,6 +27,7 @@ from bvm.hemodynamics import YOUNG_TSAI_KT  # noqa: E402
 from cmha_prepare import axis_intersection  # noqa: E402
 
 DATA = ROOT / "data" / "cmha"
+WEB = ROOT / "app" / "data" / "patient"     # committed: compact geometry for the in-app viewer (CC BY)
 MU, RHO = 0.0035, 1060.0           # this project's blood (the authors' case used μ = 0.00345)
 MMHG = 133.322
 GATEWAY_MM = [1.5, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0]   # app/devices.js
@@ -159,6 +160,7 @@ def main(sid: str) -> None:
                                      "note": "starting values; recalibrate from the healthy CFD run (docs/cfd-howto.md, step 3)"},
             "predictions_reduced_order": {},
         }
+        export_web(sid, key, ext, len(F), C, s, D, Dl, qd, max_r, (center, lesion[1]) if lesion else None)
         rows.append(dict(key=key, label=label, rep=rep, setup=setup, out=out, flipped=flipped, outside=outside_unchanged,
                          moved=int(moved.sum()), target=target, achieved=achieved, s_t=float(s[i_t]),
                          d_t=float(Dl[i_t]), dpv=dpv, dpl=dpl, qd=qd, dp_fixed=dp_fixed, files=f"variants/{key}/{stem}_mm.stl"))
@@ -167,6 +169,7 @@ def main(sid: str) -> None:
               f"  throat {achieved:.3f} (target {target if target is None else round(target, 3)})  "
               f"ΔP {dpv + dpl:.2f} mmHg at {qd * 6e7:.1f} mL/min  distal {100 * qd / q0:.1f}%")
 
+    write_web_manifest(sid, rows, q0, L1, center, d_local)
     for r in rows:
         r["setup"]["predictions_reduced_order"] = {
             "distal_flow_mL_min_territory": r["qd"] * 6e7, "distal_flow_pct_of_healthy": 100 * r["qd"] / q0,
@@ -256,6 +259,64 @@ def main(sid: str) -> None:
     ]
     (ROOT / "docs" / f"cfd-variants-{sid}.md").write_text("\n".join(lines))
     render(renders, ROOT / "docs" / f"cfd-variants-{sid}.png", sid)
+
+
+def export_web(sid, key, ext, n_orig, C, s, D, Dl, qd, max_r, lesion_span=None):
+    """Binary STL (faces grouped by patch) + per-face M1 station index, for the in-app viewer."""
+    import struct
+    from scipy.spatial import cKDTree
+    out = WEB / sid
+    out.mkdir(parents=True, exist_ok=True)
+    order = np.argsort(ext.tags, kind="stable")          # wall (original faces first, then extensions), caps
+    F = ext.F[order]
+    tri = ext.V[F].astype("<f4")
+    nrm = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-30)
+    rec = np.zeros(len(F), dtype=[("n", "<3f4"), ("v", "<9f4"), ("a", "<u2")])
+    rec["n"], rec["v"] = nrm, tri.reshape(-1, 9)
+    head = f"BVM {sid} {key} | CMHA, Song et al. 2024 Sci Data, CC BY | mm".encode()[:80].ljust(80, b" ")
+    (out / f"{key}.stl").write_bytes(head + struct.pack("<I", len(F)) + rec.tobytes())
+    counts = {n: int(np.sum(ext.tags == k)) for k, n in enumerate(ext.names)}
+    # M1 station for each original wall face (extensions and branches: -1)
+    cen = ext.V[F[:counts["wall"]]].mean(1)
+    dist, idx = cKDTree(C).query(cen)
+    is_orig = np.zeros(counts["wall"], bool)
+    is_orig[:n_orig] = True                               # stable sort kept original faces first
+    inside = is_orig & (dist < max_r * 1.15) & (idx > 0) & (idx < len(s) - 1)
+    face_s = np.where(inside, idx, -1).astype(int)
+    r = Dl / 2e3
+    # pressure along M1 relative to the inlet: Poiseuille on the measured areas + Young–Tsai loss ramped over
+    # the diverging half of the lesion (same construction as the reduced-order engine)
+    g = 8 * MU * qd / (np.pi * r**4)
+    dp = np.concatenate([[0.0], np.cumsum(0.5 * (g[1:] + g[:-1]) * np.diff(s) * 1e-3)])
+    _, loss, i_t = lesion_dp(s, D, Dl, qd)
+    if lesion_span and loss > 0:
+        s_end = lesion_span[0] + lesion_span[1] / 2
+        dp = dp + loss * MMHG * np.clip((s - s[i_t]) / max(s_end - s[i_t], 1e-9), 0, 1)
+    prof = {"s_mm": np.round(s, 3).tolist(), "D_mm": np.round(Dl, 4).tolist(), "D_healthy_mm": np.round(D, 4).tolist(),
+            "wss_Pa": np.round(4 * MU * qd / (np.pi * r**3), 3).tolist(), "p_mmHg": np.round(-dp / MMHG, 4).tolist(),
+            "re": np.round(4 * RHO * qd / (np.pi * MU * Dl * 1e-3), 2).tolist(), "q_mL_min": qd * 6e7}
+    meta = {"counts": counts, "patch_order": ext.names, "n_original_wall": int(n_orig),
+            "face_station": face_s.tolist(), "profile": prof}
+    (out / f"{key}.json").write_text(json.dumps(meta, separators=(",", ":")))
+
+
+def write_web_manifest(sid, rows, q0, L1, center, d_local):
+    man = {
+        "subject": sid,
+        "attribution": "Geometry: CMHA dataset, Song M et al., Sci Data 2024 (doi:10.1038/s41597-024-04056-8), "
+                       "Figshare 10.6084/m9.figshare.26965450, CC BY 4.0. Modified: flow extensions added; "
+                       "lesions and post-treatment lumens imposed computationally (BVM project).",
+        "m1_length_mm": L1, "lesion_center_mm": center, "local_diameter_mm": d_local,
+        "units": "mm",
+        "variants": [{"key": r["key"], "label": r["label"], "distal_flow_mL_min": r["qd"] * 6e7,
+                      "distal_flow_pct": 100 * r["qd"] / q0, "dP_M1_mmHg": r["dpv"] + r["dpl"],
+                      "throat_diameter_mm": r["d_t"] if r["moved"] else None,
+                      "throat_ratio": r["achieved"] if r["moved"] else None,
+                      "checks_pass": bool(all(r["rep"]["checks"].values()) and r["flipped"] == 0 and r["outside"])}
+                     for r in rows],
+    }
+    (WEB / sid / "manifest.json").write_text(json.dumps(man, indent=1))
 
 
 def render(items, path, sid):

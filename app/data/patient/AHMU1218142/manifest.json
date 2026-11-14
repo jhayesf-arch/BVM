@@ -1,0 +1,70 @@
+{
+ "subject": "AHMU1218142",
+ "attribution": "Geometry: CMHA dataset, Song M et al., Sci Data 2024 (doi:10.1038/s41597-024-04056-8), Figshare 10.6084/m9.figshare.26965450, CC BY 4.0. Modified: flow extensions added; lesions and post-treatment lumens imposed computationally (BVM project).",
+ "m1_length_mm": 17.5,
+ "lesion_center_mm": 8.75,
+ "local_diameter_mm": 2.6581615002103627,
+ "units": "mm",
+ "variants": [
+  {
+   "key": "healthy",
+   "label": "Healthy baseline (original lumen)",
+   "distal_flow_mL_min": 153.0,
+   "distal_flow_pct": 100.0,
+   "dP_M1_mmHg": 0.9006136750225999,
+   "throat_diameter_mm": null,
+   "throat_ratio": null,
+   "checks_pass": true
+  },
+  {
+   "key": "occluded_icas70",
+   "label": "Occluded \u00b7 ICAS plaque 70% (diameter), 6 mm",
+   "distal_flow_mL_min": 75.33169811289443,
+   "distal_flow_pct": 49.236403995355836,
+   "dP_M1_mmHg": 38.51612679095466,
+   "throat_diameter_mm": 0.7839023548278201,
+   "throat_ratio": 0.3025025052692261,
+   "checks_pass": true
+  },
+  {
+   "key": "occluded_thrombus95",
+   "label": "Occluded \u00b7 embolic thrombus 95% (diameter), 8 mm",
+   "distal_flow_mL_min": 1.6439862236867555,
+   "distal_flow_pct": 1.074500799795265,
+   "dP_M1_mmHg": 74.20380150129475,
+   "throat_diameter_mm": 0.13378367628752172,
+   "throat_ratio": 0.05162619679844114,
+   "checks_pass": true
+  },
+  {
+   "key": "recanalized_thrombectomy",
+   "label": "Recanalized \u00b7 successful thrombectomy (0% residual)",
+   "distal_flow_mL_min": 153.0,
+   "distal_flow_pct": 100.0,
+   "dP_M1_mmHg": 0.9006136750225999,
+   "throat_diameter_mm": null,
+   "throat_ratio": null,
+   "checks_pass": true
+  },
+  {
+   "key": "recanalized_angioplasty",
+   "label": "Recanalized \u00b7 Gateway 2 mm, 15% recoil \u2192 36.0% residual",
+   "distal_flow_mL_min": 146.36911905846293,
+   "distal_flow_pct": 95.66609088788427,
+   "dP_M1_mmHg": 4.112013730982629,
+   "throat_diameter_mm": 1.661405182134935,
+   "throat_ratio": 0.641124786483747,
+   "checks_pass": true
+  },
+  {
+   "key": "recanalized_stent",
+   "label": "Recanalized \u00b7 Wingspan, 31.9% residual (HDE mean)",
+   "distal_flow_mL_min": 148.48148041499547,
+   "distal_flow_pct": 97.04671922548722,
+   "dP_M1_mmHg": 3.088976605390115,
+   "throat_diameter_mm": 1.7684574905304118,
+   "throat_ratio": 0.6824355330136493,
+   "checks_pass": true
+  }
+ ]
+}
