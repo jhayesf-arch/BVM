@@ -37,6 +37,42 @@ Then open http://localhost:8766.
 * **Export:** STL (mm, with wall/inlet/outlet patches), CSV profiles, JSON, PNG, and a shareable link.
   The link encodes the current settings in the URL.
 
+### Device panel (top of the 3D view)
+
+* **Lesion switch.** Choose **Plaque** (chronic intracranial atherosclerotic stenosis, ICAS) or
+  **Clot** (acute thrombotic occlusion).
+* **Devices offered for each lesion:**
+
+  | Lesion | Category | Devices |
+  |---|---|---|
+  | Clot | Stent retrievers | Trevo NXT (Stryker), Solitaire X (Medtronic), EMBOTRAP III (Cerenovus), Tigertriever (Rapid Medical, adjustable diameter) |
+  | Clot | Aspiration catheters | RED 72 (Penumbra), ZOOM 71 (Imperative Care) |
+  | Plaque | Angioplasty and stenting | Gateway PTA balloon and Wingspan stent (Stryker) |
+
+* **Auto-sizing.** Sizes follow the published rules:
+  * Gateway at ~80% of the normal vessel diameter
+  * Wingspan 0.5–1.0 mm over the normal vessel, extending at least 3 mm past each end of the lesion
+  * retrievers by their labeled vessel ranges
+* **Views.** Switch between **Before**, **Device** (device in position) and **After**.
+* **Details panel.** It shows:
+  * the procedure inputs
+  * IFU/sizing checks (✓ / ! / ✕)
+  * device metrics: for aspiration, a Poiseuille flow estimate, the catheter Reynolds number and a tip-force index
+  * a before→after table of flow, % of healthy, throat Re, ΔP, Pd/Pa and peak WSS
+  * the patent numbers as published on each manufacturer's virtual patent-marking page, each linked to Google Patents
+  * source links for every number
+* **Patent status.** Each patent list is tagged as listed on the manufacturer's marking page, a
+  related patent family only, or not found. The tags are honest about gaps: we found no marked
+  patents for Solitaire X or RED 72, and EMBOTRAP is shown with its developer's patent family.
+* **What is and isn't simulated.** The model does **not** simulate device–clot or device–wall
+  mechanics. Outcomes are inputs you set or published means:
+  * pass success and residual stenosis
+  * balloon recoil (assumed 15%)
+  * post-stent residual stenosis (31.9%, the HDE-study mean) and restenosis
+
+  The simulator computes the hemodynamic consequence of the resulting lumen. A stented segment is
+  treated as non-distensible, which shows the compliance mismatch at the stent edges.
+
 `app/model.js` is a line-for-line port of the Python engine below. They agree to within 0.002% on
 flow, Re, ΔP, WSS and Dean number across mixed test cases. Change both together.
 

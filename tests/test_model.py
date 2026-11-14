@@ -93,6 +93,16 @@ def test_territory_bc_calibrates_and_occlusion_reduces_flow():
     assert fracs[0] > 0.95 and fracs[-1] < 0.5
 
 
+def test_rigid_span_holds_stented_segment():
+    sol = solve(Vessel(stiffness_kpa=500, rigid_span_mm=(7.0, 13.0)))
+    s_mm = sol.s * 1e3
+    inside = (s_mm >= 7.0 - 1e-9) & (s_mm <= 13.0 + 1e-9)
+    assert np.all(sol.strain[inside] == 0)
+    assert np.all(sol.strain[~inside] > 0)
+    assert sol.radius[inside].max() == pytest.approx(0.0015)  # unloaded radius inside the stent
+    assert sol.radius[0] > 0.0015                              # compliance mismatch at the stent edge
+
+
 def test_flow_regime_labels():
     assert flow_regime(500) == "laminar"
     assert flow_regime(3000) == "transitional"
