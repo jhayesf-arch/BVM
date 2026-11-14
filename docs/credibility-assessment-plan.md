@@ -69,6 +69,12 @@ reassessing this step and raising the credibility goals.
 * across 43 controls, Murray's D³ rule reproduces the authors' CFD flow split (r = 0.85,
   mean absolute error 0.05).
 
+Occluded and recanalized lumens for the same subject are built and verified in
+[cfd-variants-AHMU1218142.md](cfd-variants-AHMU1218142.md): every variant is watertight with no flipped
+faces, is unchanged outside the lesion, and has a measured throat within 0.003 of the target. The
+solver set-up, mesh-independence steps and the 1D-versus-3D comparison are in
+[cfd-howto.md](cfd-howto.md).
+
 Model B (3D CFD) needs its own category 1 and 8 evidence: solver verification, mesh independence by
 GCI on at least three meshes, and outlet BC sensitivity. It then validates against the same bench data.
 

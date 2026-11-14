@@ -169,6 +169,12 @@ mimic flow loop and proposed credibility goals.
   unchanged anatomy, volume and clearances. `scripts/cmha_prepare.py <id>` does this for a CMHA
   control and cross-checks it against the authors' Fluent case. See
   [`docs/cfd-geometry-AHMU1218142.md`](docs/cfd-geometry-AHMU1218142.md).
+* `scripts/cmha_variants.py <id>` imposes lesions on the patient's own M1, with the same cosine profile
+  and device-outcome rules as the app. It writes occluded (70% plaque, 95% thrombus) and recanalized
+  (thrombectomy, Gateway angioplasty, Wingspan stent) lumens, each CFD-ready, verified, and with a
+  `cfd_setup.json` and reduced-order predictions. See
+  [`docs/cfd-variants-AHMU1218142.md`](docs/cfd-variants-AHMU1218142.md). Running them in Fluent,
+  COMSOL or OpenFOAM is covered in [`docs/cfd-howto.md`](docs/cfd-howto.md).
 * `python -m bvm verify` regenerates [`docs/verification-results.md`](docs/verification-results.md),
   which has the grid convergence index for each endpoint and a Monte Carlo uncertainty propagation
   with sensitivities.

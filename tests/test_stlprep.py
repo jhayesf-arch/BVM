@@ -47,3 +47,22 @@ def test_inlet_override_and_patch_counts(tmp_path):
     assert [ln.split()[1] for ln in text.splitlines() if ln.startswith("solid ")] == ["wall", "inlet", "outlet_1"]
     back = sp.weld(sp.read_stl(tmp_path / "x.stl"), tol=1e-5)
     assert sp.edge_stats(back[1]) == {"boundary": 0, "nonmanifold": 0, "misoriented": 0}
+
+
+def test_centerline_slices_and_stenosis_on_known_tube():
+    V, F = open_tube(diameter_mm=3.0, length_mm=20.0)
+    inlet = min(sp.find_ports(V, F), key=lambda p: p.center[2])
+    C, s = sp.resample(sp.march_centerline(V, inlet, np.array([0.0, 0.0, 20.0])), 0.25)
+    assert np.allclose(C[:, :2], 0, atol=1e-3)                    # straight tube: centerline on the axis
+    A = sp.area_profile(V, F, C[1:], s[1:])
+    poly = 0.5 * 48 * 1.5**2 * np.sin(2 * np.pi / 48)            # exact area of the 48-gon section
+    assert A == pytest.approx(np.full_like(A, poly), rel=1e-6)
+    for pct in (50.0, 70.0, 95.0):
+        Vn, moved = sp.apply_stenosis(V, C, s, center=10.0, length=6.0, pct=pct)
+        assert np.array_equal(Vn[~moved], V[~moved])
+        assert np.all(np.einsum("ij,ij->i", sp.face_normals(V, F), sp.face_normals(Vn, F)) > 0)
+        i = int(np.argmin(abs(s - 10.0)))
+        throat = sp.slice_area(Vn, F, C[i], np.array([0.0, 0.0, 1.0]))
+        assert np.sqrt(throat / poly) == pytest.approx(1 - pct / 100, rel=1e-3)
+        ext = sp.extend(Vn, F)
+        assert all(sp.verify(Vn, F, ext)["checks"].values())
