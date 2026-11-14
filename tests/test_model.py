@@ -141,3 +141,37 @@ def test_inlet_drop_lowers_territory_flow_like_a_pressure_ratio():
     assert full.summary()["perfusion"]["territory_flow_fraction"] == pytest.approx(1.0, rel=1e-6)
     # linear (Poiseuille + fixed distal resistance): flow scales with (Pin - drop - Pout)/(Pin - Pout)
     assert low.summary()["perfusion"]["territory_flow_fraction"] == pytest.approx(50 / 75, rel=1e-6)
+
+
+def _branched(**kw):
+    return Vessel(n_branches=6, branch_start=0.3, branch_end=0.8, **kw)
+
+
+def test_branches_calibrate_and_conserve_mass():
+    sol = solve(_branched(), flow=FlowConditions(bc="territory", branch_flow_pct=2.0))
+    perf = sol.summary()["perfusion"]
+    assert perf["territory_flow_fraction"] == pytest.approx(1.0, rel=1e-6)
+    assert perf["branch_flow_fraction"] == pytest.approx(1.0, rel=1e-6)
+    assert sol.q == pytest.approx(sol.q_out + sol.branch_q.sum(), rel=1e-12)
+    assert sol.branch_q.sum() / sol.q == pytest.approx(0.02, rel=1e-6)
+
+
+def test_branches_match_unbranched_when_they_take_no_flow():
+    a = solve(_branched(occlusion_pct=60), flow=FlowConditions(bc="territory", branch_flow_pct=0.0))
+    b = solve(Vessel(occlusion_pct=60), flow=FlowConditions(bc="territory"))
+    assert a.q == pytest.approx(b.q, rel=1e-8)
+
+
+def test_upstream_stenosis_starves_branches_downstream_of_it():
+    fl = FlowConditions(bc="territory", branch_flow_pct=2.0)
+    sol = solve(_branched(occlusion_pct=70, stenosis_center=0.2, stenosis_length_mm=4.0), flow=fl)
+    perf = sol.summary()["perfusion"]
+    assert perf["branch_flow_fraction"] < 0.9 and perf["territory_flow_fraction"] < 0.9
+    # a lesion downstream of every branch origin leaves the branches better perfused than the territory
+    dist = solve(_branched(occlusion_pct=70, stenosis_center=0.9, stenosis_length_mm=3.0), flow=fl).summary()["perfusion"]
+    assert dist["branch_flow_fraction"] > dist["territory_flow_fraction"]
+
+
+def test_lesion_pressure_drop_reported():
+    s = solve(Vessel(occlusion_pct=70, stiffness_kpa=RIGID)).summary()["stenosis"]
+    assert 0 < s["dP_lesion_mmHg"] and 0 < s["Pd_over_Pa_lesion"] < 1

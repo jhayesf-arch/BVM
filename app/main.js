@@ -1,4 +1,4 @@
-import { DEFAULTS, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, solve, throatRatio, validate } from "./model.js";
+import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, interp1, solve, throatRatio, validate } from "./model.js";
 import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js";
 import { LineChart, fmt } from "./charts.js";
 import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js";
@@ -54,6 +54,11 @@ const SHAPE = [
   { key: "bulbCenter", label: "Bulb position", unit: "", min: 0.1, max: 0.9, step: 0.01, display: (v, p) => `${(v * p.lengthMm).toFixed(1)}`, unitFn: () => "mm" },
   { key: "bulbLengthMm", label: "Bulb length", unit: "mm", min: 2, max: 30, step: 0.5 },
   { key: "wallMm", label: "Wall thickness", unit: "mm", min: 0.02, max: 1, step: 0.01 },
+  { key: "nBranches", label: "Perforator branches", unit: "", min: 0, max: 12, step: 1,
+    hint: "Side branches (e.g. lenticulostriates off M1). Each drains through its own resistance calibrated on the healthy vessel." },
+  { key: "branchFlowPct", label: "Perforators' share of healthy flow", unit: "%", min: 0, max: 10, step: 0.1 },
+  { key: "branchStart", label: "First branch at", unit: "", min: 0.05, max: 0.95, step: 0.01, display: (v, p) => `${(v * p.lengthMm).toFixed(1)}`, unitFn: () => "mm" },
+  { key: "branchEnd", label: "Last branch at", unit: "", min: 0.05, max: 0.95, step: 0.01, display: (v, p) => `${(v * p.lengthMm).toFixed(1)}`, unitFn: () => "mm" },
 ];
 
 const PRESETS = [
@@ -94,6 +99,8 @@ const SENS_Y = [
   { key: "V_throat", label: "Throat velocity (m/s)", get: (s) => s.V_throat },
   { key: "post_pct", label: "Flow after device, % of healthy", post: true, bands: true, get: (s, b) => (b.flow_fraction ?? 1) * 100 },
   { key: "restored", label: "Flow restored, % of deficit", post: true, get: (s, b) => restoredPct(s, b) ?? NaN },
+  { key: "dP_lesion", label: "Pressure drop across lesion (mmHg)", get: (s) => s.dP_lesion_mmHg ?? 0 },
+  { key: "branch_pct", label: "Perforator flow, % of healthy", bands: true, get: (s) => (s.branch_fraction ?? NaN) * 100 },
 ];
 
 // share of the flow deficit recovered by the device; null when there is no deficit to recover
@@ -147,7 +154,7 @@ function makeControl(f, container, { primary = false } = {}) {
   num.addEventListener("change", () => {
     let v = parseFloat(num.value);
     if (!isFinite(v)) return sync();
-    if (f.key === "stenosisCenter" || f.key === "bulbCenter") v = v / params.lengthMm;
+    if (["stenosisCenter", "bulbCenter", "branchStart", "branchEnd"].includes(f.key)) v = v / params.lengthMm;
     set(f.key, Math.min(Math.max(v, f.min), f.max));
   });
   controls.set(f.key, { sync, wrap });
@@ -213,6 +220,8 @@ function clampParams(q) {
   }
   if (q.basis === "diameter" && q.occlusionPct > 95) q.occlusionPct = 95;
   q.inletDropMmHg = Math.min(q.inletDropMmHg, q.inletMmHg - q.outflowMmHg - 2);
+  if (q.branchStart > q.branchEnd) q.branchEnd = q.branchStart;
+  q.nBranches = Math.round(q.nBranches);
   return q;
 }
 
@@ -299,6 +308,7 @@ function compute() {
   renderDevicePanel(dev);
   renderAnatomy();
   updateRestoration(dev);
+  renderEndpoints(dev);
   syncSensOptions(dev);
   updateLegend(meta, range);
   updateCharts();
@@ -399,13 +409,13 @@ const BAND_COLOR = { normal: "var(--ok)", oligemia: "var(--warn)", "penumbra-ran
 
 function updateRestoration(dev) {
   const card = $("#restore-card"), a = pre.summary, b = post?.summary;
-  $("#flow-before").innerHTML = `${qFmt(a.Q_mL_min)}<small> mL/min</small>`;
+  $("#flow-before").innerHTML = `${qFmt(a.Q_distal_mL_min)}<small> mL/min</small>`;
   $("#after-dev").textContent = dev ? `· ${dev.name}` : "";
   const meterA = $("#meter-after"), meterB = $("#meter-before");
   if (a.flow_fraction == null) {
     card.classList.add("disabled");
     $("#frac-before").textContent = "flow is prescribed";
-    $("#flow-after").innerHTML = b ? `${qFmt(b.Q_mL_min)}<small> mL/min</small>` : "—";
+    $("#flow-after").innerHTML = b ? `${qFmt(b.Q_distal_mL_min)}<small> mL/min</small>` : "—";
     $("#frac-after").textContent = b ? "flow is prescribed" : "no device";
     badge($("#restored"), "", "switch to Brain territory");
     badge($("#band"), "", "—");
@@ -414,14 +424,14 @@ function updateRestoration(dev) {
     return;
   }
   card.classList.remove("disabled");
-  const fa = a.flow_fraction * 100, refQ = a.Q_mL_min / a.flow_fraction;
+  const fa = a.flow_fraction * 100, refQ = a.reference_distal_mL_min;
   $("#frac-before").textContent = `${fa.toFixed(0)}% of healthy`;
   meterB.style.width = `${Math.min(fa, 100)}%`;
   if (!b) {
     $("#flow-after").innerHTML = "—";
     $("#frac-after").textContent = "pick a device";
     Object.assign(meterA.style, { width: `${Math.min(fa, 100)}%`, background: BAND_COLOR[a.ischemia_band] });
-    const deficit = refQ - a.Q_mL_min;
+    const deficit = refQ - a.Q_distal_mL_min;
     badge($("#restored"), "", deficit > 0.01 * refQ ? `deficit ${qFmt(deficit)} mL/min` : "no flow deficit");
     badge($("#band"), a.ischemia_band);
     $("#restore-note").textContent = deficit > 0.01 * refQ
@@ -430,18 +440,134 @@ function updateRestoration(dev) {
     return;
   }
   const fb = b.flow_fraction * 100, r = restoredPct(a, b);
-  $("#flow-after").innerHTML = `${qFmt(b.Q_mL_min)}<small> mL/min</small>`;
+  $("#flow-after").innerHTML = `${qFmt(b.Q_distal_mL_min)}<small> mL/min</small>`;
   $("#frac-after").textContent = `${fb.toFixed(0)}% of healthy`;
   Object.assign(meterA.style, { width: `${Math.min(fb, 100)}%`, background: BAND_COLOR[b.ischemia_band] });
   if (r == null) badge($("#restored"), "", "no flow deficit to restore");
   else badge($("#restored"), r >= 90 ? "restored-good" : r >= 50 ? "restored-part" : "restored-poor", `restored ${Math.max(r, 0).toFixed(0)}% of deficit`);
   badge($("#band"), b.ischemia_band, `after: ${b.ischemia_band.replace("-", " ")}`);
-  const gain = b.Q_mL_min - a.Q_mL_min;
+  const gain = b.Q_distal_mL_min - a.Q_distal_mL_min;
   const failed = !dev.balloon && !dev.stent && !deviceOpts.success;
   const remaining = fb < 99 && !failed ? ` The remaining ${(100 - fb).toFixed(0)}% gap comes from the residual narrowing after treatment${params.inletDropMmHg > 0 ? " and the upstream pressure loss" : ""}.` : "";
   $("#restore-note").textContent = failed
     ? "Pass set as unsuccessful: the clot stays, so flow is unchanged."
     : `${gain >= 0 ? "+" : ""}${qFmt(gain)} mL/min after treatment.${remaining} The bar's white line marks flow before treatment.`;
+}
+
+// ───────────────────────── secondary + safety endpoints ─────────────────────────
+// Lesion span ∪ stent/balloon span (mm); measured at the same positions before and after.
+function treatedSpan() {
+  const L = params.lengthMm, sc = params.stenosisCenter * L, h = params.stenosisLengthMm / 2;
+  let a = null, b = null;
+  if (params.occlusionPct > 0) { a = sc - h; b = sc + h; }
+  const o = treatment?.overlay;
+  const span = o?.type === "stent" ? [o.startMm, o.endMm] : o?.type === "balloon" ? [o.centerMm - o.lengthMm / 2, o.centerMm + o.lengthMm / 2] : null;
+  if (span) { a = a == null ? span[0] : Math.min(a, span[0]); b = b == null ? span[1] : Math.max(b, span[1]); }
+  return a == null ? null : [Math.max(0, a), Math.min(L, b)];
+}
+
+function spanMetrics(res, [a, b]) {
+  const sm = Array.from(res.geom.s, (v) => v * 1e3), w = res.wss;
+  const pa = interp1(a, sm, res.pressure), pb = interp1(b, sm, res.pressure);
+  let wInt = 0, len = 0, wMax = 0;
+  for (let i = 1; i < sm.length; i++) {
+    const x0 = Math.max(sm[i - 1], a), x1 = Math.min(sm[i], b);
+    if (x1 > x0) { wInt += 0.5 * (w[i - 1] + w[i]) * (x1 - x0); len += x1 - x0; }
+  }
+  for (let i = 0; i < sm.length; i++) if (sm[i] >= a - 1e-9 && sm[i] <= b + 1e-9) wMax = Math.max(wMax, w[i]);
+  return { dP: (pa - pb) / MMHG, pdpa: pb / pa, wssMean: len ? wInt / len : w[0], wssMax: wMax };
+}
+
+const areaTxt = (v) => (v > 99.5 && v < 100 ? v.toFixed(2) : v.toFixed(0));
+const lengthWhere = (res, test) => (Array.from(res.wss).filter(test).length / res.wss.length) * params.lengthMm;
+
+// thin-wall estimate of the pressure needed to stretch the healthy wall to the device's nominal diameter
+function wallContact(dev) {
+  if (!dev || !treatment || !(dev.stent || dev.category?.startsWith("Stent retriever"))) return null;
+  const o = treatment.overlay;
+  const centerMm = o.type === "stent" ? (o.startMm + o.endMm) / 2 : o.centerMm;
+  const g = pre.geom, sm = Array.from(g.s, (v) => v * 1e3);
+  const stretch = interp1(centerMm, sm, pre.radius) / interp1(centerMm, sm, g.radius);
+  const dv = 2e3 * interp1(centerMm, sm, g.base) * stretch;  // loaded healthy diameter, mm
+  const dn = dev.stent ? o.diameterMm : Math.min(deviceOpts.adjustDiameterMm ?? treatment.size.diameterMm, treatment.size.diameterMm);
+  const eps = Math.max(0, (dn - dv) / dv);
+  const pMmHg = params.rigid ? null : (params.stiffnessKpa * 1e3 * params.wallMm * 1e-3 * eps) / (dv / 2 * 1e-3) / MMHG;
+  return { dv, dn, eps, pMmHg, retriever: !dev.stent };
+}
+
+function renderEndpoints(dev) {
+  const a = pre.summary, b = post?.summary ?? null, span = treatedSpan() ?? [0, params.lengthMm];
+  const segA = spanMetrics(pre, span), segB = post ? spanMetrics(post, span) : null;
+  const n = (v, d) => (v == null || !isFinite(v) ? null : (+v.toFixed(d)).toLocaleString());
+  const pct = (f) => (f == null ? "" : ` <span class="muted">(${(f * 100).toFixed(0)}%)</span>`);
+  const row = (label, x, y, upGood = null, raw = null) => {
+    let cls = "";
+    if (raw && y != null && upGood != null && Math.abs(raw[1] - raw[0]) > 1e-6 * Math.max(1, Math.abs(raw[0]))) cls = (raw[1] > raw[0]) === upGood ? "up" : "down";
+    return `<tr><td>${label}</td><td>${x ?? "—"}</td><td class="${y == null ? "na" : cls}">${y ?? "—"}</td></tr>`;
+  };
+  const group = (label) => `<tr class="group"><td colspan="3">${label}</td></tr>`;
+  const head = `<thead><tr><th></th><th>Before</th><th>After</th></tr></thead>`;
+  const hasBr = params.nBranches > 0;
+  const spanTxt = treatedSpan() ? `${span[0].toFixed(1)}–${span[1].toFixed(1)} mm` : "whole segment, no lesion";
+
+  let sec = head + group(`Treated segment · ${spanTxt}`) +
+    row("Pressure drop ΔP, mmHg", n(segA.dP, 2), segB && n(segB.dP, 2), false, [segA.dP, segB?.dP]) +
+    row("Pd/Pa across segment", n(segA.pdpa, 3), segB && n(segB.pdpa, 3), true, [segA.pdpa, segB?.pdpa]) +
+    group("Downstream flow distribution, mL/min") +
+    row("Distal territory (outlet)", `${qFmt(a.Q_distal_mL_min)}${pct(a.flow_fraction)}`, b && `${qFmt(b.Q_distal_mL_min)}${pct(b.flow_fraction)}`, true, [a.Q_distal_mL_min, b?.Q_distal_mL_min]);
+  if (hasBr) sec +=
+    row(`Perforators (${params.nBranches})`, `${qFmt(a.Q_branches_mL_min)}${pct(a.branch_fraction)}`, b && `${qFmt(b.Q_branches_mL_min)}${pct(b.branch_fraction)}`, true, [a.Q_branches_mL_min, b?.Q_branches_mL_min]) +
+    row("Perforator share of inflow", `${(100 * a.Q_branches_mL_min / a.Q_mL_min).toFixed(2)}%`, b && `${(100 * b.Q_branches_mL_min / b.Q_mL_min).toFixed(2)}%`);
+  sec += group("Wall shear stress in segment, Pa") +
+    row("Mean WSS", n(segA.wssMean, 2), segB && n(segB.wssMean, 2), null) +
+    row("Peak WSS", n(segA.wssMax, 1), segB && n(segB.wssMax, 1), false, [segA.wssMax, segB?.wssMax]) +
+    row("Change in mean WSS", "", segB && `${segB.wssMean >= segA.wssMean ? "+" : ""}${(100 * (segB.wssMean / segA.wssMean - 1)).toFixed(0)}%`);
+  $("#secondary").innerHTML = sec;
+  $("#secondary-note").textContent = a.flow_fraction == null
+    ? "Fixed-flow mode: the inflow is prescribed, so the distribution shows how it splits, not how much reaches the territory."
+    : hasBr ? "Distal = flow leaving the outlet (M2 territory). Perforators = deep territory (basal ganglia, internal capsule)." : "Add perforator branches in the Anatomy tab to see how flow divides between deep and distal territories.";
+
+  // safety
+  const lowA = lengthWhere(pre, (w) => w < LOW_WSS_PA), lowB = post ? lengthWhere(post, (w) => w < LOW_WSS_PA) : null;
+  const hiA = lengthWhere(pre, (w) => w > HIGH_WSS_PA), hiB = post ? lengthWhere(post, (w) => w > HIGH_WSS_PA) : null;
+  const starved = (s) => (s.branch_fractions ?? []).filter((f) => f < 0.5).length;
+  let saf = head + group("Stagnation / low shear") +
+    row(`Length with WSS < ${LOW_WSS_PA} Pa, mm`, n(lowA, 1), post && n(lowB, 1), false, [lowA, lowB]) +
+    row("Minimum WSS, Pa", n(a.wss_min, 2), b && n(b.wss_min, 2), true, [a.wss_min, b?.wss_min]) +
+    group("Elevated shear") +
+    row("Peak WSS, Pa", n(a.wss_max, 1), b && n(b.wss_max, 1), false, [a.wss_max, b?.wss_max]) +
+    row(`Length with WSS > ${HIGH_WSS_PA} Pa, mm`, n(hiA, 1), post && n(hiB, 1), false, [hiA, hiB]);
+  if (hasBr && a.branch_fractions) saf +=
+    group("Perforators") + row("Below 50% of healthy flow", `${starved(a)} of ${params.nBranches}`, b && `${starved(b)} of ${params.nBranches}`, false, [starved(a), b ? starved(b) : null]);
+  const c = wallContact(dev);
+  if (c) saf += group(`Wall contact · estimate${c.retriever ? " during deployment" : ""}`) +
+    row("Oversizing vs local vessel", "", `${(c.eps * 100).toFixed(0)}% <span class="muted">(${c.dn.toFixed(2)} vs ${c.dv.toFixed(2)} mm)</span>`) +
+    row("Pressure to hold that stretch", "", c.pMmHg == null ? "rigid wall" : `${c.pMmHg.toFixed(0)} mmHg <span class="muted">(${(c.pMmHg * MMHG / 1e3).toFixed(1)} kPa)</span>`);
+  $("#safety").innerHTML = saf;
+
+  // flags
+  const flags = [];
+  const areaPost = treatment ? 100 * (1 - throatRatio(treatment.post) ** 2) : null;
+  if (params.occlusionPct > 0 && a.area_stenosis_pct >= 50)
+    flags.push(["warn", `Before: a ${areaTxt(a.area_stenosis_pct)}%-area stenosis. Separation and recirculation (stagnation) are likely just downstream of the throat. Not resolved here; confirm with 3D CFD.`]);
+  if (treatment && treatment.post.occlusionPct > 0 && areaPost >= 50)
+    flags.push(["warn", `After: ${areaTxt(areaPost)}% area stenosis remains, so post-stenotic separation is still likely.`]);
+  if (params.bulbPct >= 15) flags.push(["warn", `The ${params.bulbPct}% bulb dilation favors flow separation and low, oscillating shear on its outer wall, which this model cannot resolve.`]);
+  if ((b ?? a).wss_max > HIGH_WSS_PA) flags.push(["warn", `Shear above ${HIGH_WSS_PA} Pa over ${n(b ? hiB : hiA, 1)} mm${b ? " after treatment" : ""}: a screening level for platelet activation in stenotic jets.`]);
+  if (hasBr) {
+    const s0 = params.stenosisCenter * params.lengthMm - params.stenosisLengthMm / 2, s1 = s0 + params.stenosisLengthMm;
+    const origins = pre.geom.branchIdx.map((i) => pre.geom.s[i] * 1e3);
+    const inPlaque = params.occlusionPct > 0 ? origins.filter((x) => x >= s0 && x <= s1).length : 0;
+    if (inPlaque) flags.push(["warn", `${inPlaque} perforator origin${inPlaque > 1 ? "s lie" : " lies"} within the ${params.lesion === "thrombus" ? "clot" : "plaque"}. Origin narrowing itself is not modeled, only the pressure there.`]);
+    if (dev?.stent && treatment) {
+      const o = treatment.overlay, jailed = origins.filter((x) => x >= o.startMm && x <= o.endMm).length;
+      if (jailed) flags.push(["bad", `The stent covers ${jailed} perforator origin${jailed > 1 ? "s" : ""}. Plaque shifted into a covered origin ("snowplow") can occlude it, a recognized cause of perforator stroke after intracranial stenting. That risk is not modeled.`]);
+    }
+  }
+  if (c && c.eps > 0.1) flags.push(["warn", `Nominal oversizing of ${(c.eps * 100).toFixed(0)}% exceeds the linear wall law's ~10% range. Treat the contact pressure as an upper bound; self-expanding devices usually stop short of nominal size.`]);
+  if (dev?.balloon) flags.push(["ok", "The balloon is sized below the vessel (~80%), so it loads the plaque rather than the healthy wall. Plaque mechanics and dissection risk are not modeled."]);
+  if (!flags.length) flags.push(["ok", "No screening flags."]);
+  $("#safety-flags").innerHTML = flags.map(([lvl, txt]) => `<li class="${lvl}">${esc(txt)}</li>`).join("");
 }
 
 function updateProbe() {
@@ -473,6 +599,7 @@ const BASIS_ROWS = [
   ["wallMm", "Wall", (p) => `${+p.wallMm.toFixed(2)} mm`],
   ["flowMlMin", "Healthy flow", (p) => `${qFmt(p.flowMlMin)} mL/min`],
   ["inletMmHg", "Inlet pressure", (p) => `${p.inletMmHg.toFixed(0)} mmHg`],
+  ["nBranches", "Perforators", (p) => (p.nBranches > 0 ? `${p.nBranches} · ${p.branchFlowPct}% of flow` : "none")],
 ];
 let anatomyKey = "";
 
@@ -539,6 +666,10 @@ const GROUPS = [
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 function sceneExtras(dev) {
+  return { ...lesionExtras(dev), branches: params.nBranches > 0 ? result.summary.branch_fractions ?? new Array(params.nBranches).fill(null) : null };
+}
+
+function lesionExtras(dev) {
   const lesionBefore = params.occlusionPct > 0 ? params.lesion : null;
   if (!dev || !treatment || view === "before") return { lesion: lesionBefore };
   if (view === "inplace") return { lesion: lesionBefore, overlay: treatment.overlay };
@@ -904,6 +1035,8 @@ function buildExport() {
       inputs: params, view, results: result.summary,
       device: treatment ? { id: deviceId, name: deviceById(deviceId).name, size: treatment.size.label, options: deviceOpts,
         checks: treatment.checks, metrics: treatment.metrics, before: pre.summary, after: post.summary } : null,
+      endpoints: { treated_span_mm: treatedSpan(), before: spanMetrics(pre, treatedSpan() ?? [0, params.lengthMm]),
+        after: post ? spanMetrics(post, treatedSpan() ?? [0, params.lengthMm]) : null, wall_contact: wallContact(deviceById(deviceId)) },
     }, null, 2), "application/json");
     if (kind === "png") download(`${tag}.png`, viewer.snapshot());
     if (kind === "link") {

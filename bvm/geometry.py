@@ -33,6 +33,16 @@ class VesselGeometry:
         return self.centerline.s
 
     @property
+    def branch_index(self) -> np.ndarray:
+        """Station index of each side-branch origin (sorted; may repeat on coarse grids)."""
+        v, n = self.vessel, len(self.s)
+        if v.n_branches <= 0:
+            return np.zeros(0, dtype=int)
+        k = np.arange(v.n_branches)
+        frac = v.branch_start + (v.branch_end - v.branch_start) * (k + 0.5) / v.n_branches
+        return np.clip(np.floor(frac * (n - 1) + 0.5).astype(int), 1, n - 2)
+
+    @property
     def throat_index(self) -> int:
         """Station of the stenosis throat (deepest narrowing relative to the healthy shape)."""
         if self.vessel.occlusion_pct > 0:

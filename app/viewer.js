@@ -309,7 +309,7 @@ export class Viewer {
    * extras: { lesion: "thrombus" | "icas" | null, overlay: {type, ...} | null }
    * Must be called after update() so that the geometry matches the shown result.
    */
-  setExtras({ lesion = null, overlay = null } = {}) {
+  setExtras({ lesion = null, overlay = null, branches = null } = {}) {
     if (this.extras) { this.group.remove(this.extras); this.extras.traverse((o) => { o.geometry?.dispose(); o.material?.dispose?.(); }); }
     this.extras = new THREE.Group();
     this.group.add(this.extras);
@@ -334,6 +334,24 @@ export class Viewer {
         this.extras.add(this._tube(aMm, bMm, (s, fr) => healthy(fr) * 0.995, mat));
         this.extras.add(this._tube(aMm, bMm, (s, fr) => Math.min(fr.r * 1.015, healthy(fr) * 0.99), mat));
       }
+    }
+
+    // side branches (perforators): short stubs leaving the wall, colored by flow vs healthy
+    if (branches?.length) {
+      const idx = g.branchIdx ?? [];
+      idx.forEach((i, k) => {
+        const frac = branches[k], sMm = g.s[i] * 1e3, fr = this._frameAtMm(sMm);
+        const th = Math.PI / 2 + (k % 2 ? 0.45 : -0.45), lenM = Math.max(1.2e-3, 1.4 * fr.r);
+        const radM = Math.max(0.05e-3, Math.min(0.15e-3, 0.07 * fr.r));
+        const a = new THREE.Vector3(...this._pt(fr, fr.r * 0.9, th)), b = new THREE.Vector3(...this._pt(fr, fr.r + lenM, th));
+        const color = frac == null ? 0x8a97a8 : frac >= 0.8 ? 0x3ecf8e : frac >= 0.4 ? 0xf5b041 : frac >= 0.2 ? 0xff8a3d : 0xff5c5c;
+        const len = a.distanceTo(b);
+        const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radM * 1e3, radM * 1e3 * 0.7, len, 10),
+          new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.25, roughness: 0.6 }));
+        mesh.position.copy(a.clone().add(b).multiplyScalar(0.5));
+        mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
+        this.extras.add(mesh);
+      });
     }
 
     if (!overlay) return;
