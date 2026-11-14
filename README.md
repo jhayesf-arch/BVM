@@ -68,7 +68,18 @@ drains to the outflow pressure through its own resistance, calibrated so the hea
 4.5 cm/s ≈ 2.9 mL/min, against 153 mL/min of MCA flow. Flow is piecewise constant between branch
 origins and pressure is marched from the inlet, so each perforator sees the local pressure. A clot
 distal to some origins starves the territory but not those perforators; one proximal to them
-starves both. Count, share and positions are editable in the Anatomy tab. The Python flags are
+starves both.
+
+The basilar artery gets 8 pontine perforators spread over 10–85% of its length. The microanatomy
+study of 14 brainstems found 2–5 caudal and 5–9 middle perforators; the rostral ones arise at the
+tip or from the SCA, beyond the outlet. Their share, 4.7%, is derived by assuming they feed the
+whole pons: about 20 cm³ (MRI, 1,000 adults) × 1.04 g/cm³ × a brainstem CBF of 31.4 mL/100 g/min
+(Warnert 2014) ≈ 6.5 mL/min, out of 138 mL/min of basilar flow. A 95% basilar thrombosis then
+leaves the caudal perforators perfused while the territory beyond the clot gets 2%.
+
+In the 3D view the perforators are short stubs leaving the wall. They are colored by flow as a share
+of healthy flow (green ≥ 80%, amber 40–80%, orange 20–40%, red < 20%), and a key under the color
+legend explains them. Count, share and positions are editable in the Anatomy tab. The Python flags are
 `--n-branches`, `--branch-start`, `--branch-end` and `--branch-flow-pct`. Python's default is 0
 branches; the app's M1 default is 6.
 
