@@ -3,7 +3,7 @@ import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js";
 import { LineChart, fmt } from "./charts.js";
 import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js";
 import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js";
-import { PatientViewer } from "./patient.js";
+import { PatientViewer, solvePatient } from "./patient.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -148,10 +148,10 @@ const fromSlider = (f, t) => (f.log ? f.min * (f.max / f.min) ** (t / 1000) : +t
 const decimals = (step) => Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
 const show = (f, v) => (f.display ? f.display(v, params) : f.log ? (v >= 1000 ? (+v.toPrecision(3)).toString() : v.toFixed(0)) : v.toFixed(decimals(f.step)));
 
-function makeControl(f, container, { primary = false } = {}) {
+function makeControl(f, container, { primary = false, tag = "" } = {}) {
   const wrap = document.createElement("div");
   wrap.className = `factor ${primary ? "primary" : "compact"}`;
-  const id = `in-${f.key}`;
+  const id = `in-${tag}${f.key}`;
   wrap.innerHTML = `
     <div class="factor-head">
       <label for="${id}">${f.label}</label>
@@ -176,7 +176,7 @@ function makeControl(f, container, { primary = false } = {}) {
     if (["stenosisCenter", "bulbCenter", "branchStart", "branchEnd"].includes(f.key)) v = v / params.lengthMm;
     set(f.key, Math.min(Math.max(v, f.min), f.max));
   });
-  controls.set(f.key, { sync, wrap });
+  controls.set(tag + f.key, { sync, wrap });
   return wrap;
 }
 
@@ -216,13 +216,20 @@ function buildControls() {
   for (const f of ADVANCED) makeControl(f, adv);
   for (const f of SHAPE) makeControl(f, $("#shape"));
   for (const f of BLOOD) makeControl(f, $("#blood"));
+  for (const f of BLOOD) makeControl(f, $("#pt-blood"), { tag: "pt-" });
+  const phc = $("#pt-hct-couple");
+  if (phc && !phc.dataset.wired) { phc.addEventListener("change", () => set("hctCouple", phc.checked)); phc.dataset.wired = "1"; }
   const hc = $("#hct-couple");
   if (!hc.dataset.wired) { hc.addEventListener("change", () => set("hctCouple", hc.checked)); hc.dataset.wired = "1"; }
   controls.set("hctCouple", { sync: () => {
     hc.checked = params.hctCouple;
+    if (phc) phc.checked = params.hctCouple;
     const { muEff, distalScale } = bloodFactors(params);
-    $("#blood-derived").textContent = `Hb ${hemoglobin(params).toFixed(1)} g/dL · CaO₂ ${oxygenContent(params).toFixed(1)} mL O₂/dL · ` +
+    const derived = `Hb ${hemoglobin(params).toFixed(1)} g/dL · CaO₂ ${oxygenContent(params).toFixed(1)} mL O₂/dL · ` +
       `μ ${(muEff * 1e3).toFixed(2)} mPa·s · microvascular resistance ×${distalScale.toFixed(2)}`;
+    $("#blood-derived").textContent = derived;
+    const pd = $("#pt-blood-derived");
+    if (pd) pd.textContent = derived.replace(/μ [\d.]+ mPa·s/, `μ in this M1 ${(bloodFactors({ ...params, diameterMm: ptMetas?.healthy?.profile.D_healthy_mm[0] ?? 2.79 }).muEff * 1e3).toFixed(2)} mPa·s`);
   } });
   renderBcControls();
 }
@@ -263,7 +270,7 @@ function applySectionRanges(sec) {
 
 function rebuildControls() {
   controls.clear();
-  for (const id of ["#factors", "#advanced", "#shape", "#blood"]) $(id).innerHTML = "";
+  for (const id of ["#factors", "#advanced", "#shape", "#blood", "#pt-blood"]) $(id).innerHTML = "";
   buildControls();
 }
 
@@ -285,6 +292,7 @@ function set(key, value) {
   $("#preset").value = "";
   syncControls();
   schedule();
+  if (geomMode === "patient") renderPatient();
 }
 
 // ───────────────────────── viewer, charts ─────────────────────────
@@ -341,7 +349,7 @@ function compute() {
   syncSensOptions(dev);
   updateLegend(meta, range);
   const bl = $("#branch-legend");
-  bl.hidden = !(params.nBranches > 0);
+  bl.hidden = !(params.nBranches > 0) || geomMode === "patient";   // the patient geometry has no perforators
   bl.title = "Side-branch stubs: perforating arteries leaving this vessel (lenticulostriates off M1, pontine perforators off the basilar). Color = branch flow as a share of its healthy flow.";
   $("#branch-legend-title").textContent = { m1: "Lenticulostriates", basilar: "Pontine perforators" }[params.section] ?? "Perforators";
   updateCharts();
@@ -1124,7 +1132,7 @@ const patient = new PatientViewer($("#viewport"));
 let geomMode = hashExtras.get("geom") === "patient" ? "patient" : "parametric";
 let ptVariant = hashExtras.get("lumen") ?? "healthy";
 let ptColor = ["patch", "diameter", "wss"].includes(hashExtras.get("ptcolor")) ? hashExtras.get("ptcolor") : "patch";
-let ptManifest = null, ptMeta = null, ptHealthy = null;
+let ptManifest = null, ptMeta = null, ptHealthy = null, ptMetas = null, ptResults = null;
 const PT_SHORT = { healthy: "Healthy", occluded_icas70: "ICAS 70%", occluded_thrombus95: "Thrombus 95%",
   recanalized_thrombectomy: "Thrombectomy", recanalized_angioplasty: "Angioplasty", recanalized_stent: "Stent" };
 
@@ -1152,6 +1160,12 @@ async function renderPatient() {
     const meta = await patient.load(PATIENT_SID, ptVariant);
     if (geomMode !== "patient") return;          // switched back while loading: leave the parametric view alone
     ptMeta = meta;
+    if (!ptMetas) {
+      const all = await Promise.all(ptManifest.variants.map((v) => fetch(`data/patient/${PATIENT_SID}/${v.key}.json`).then((r) => r.json())));
+      ptMetas = Object.fromEntries(ptManifest.variants.map((v, i) => [v.key, all[i]]));
+    }
+    if (geomMode !== "patient") return;
+    ptResults = Object.fromEntries(Object.entries(ptMetas).map(([k, m]) => [k, solvePatient(m, params)]));
     err.hidden = true;
   } catch (e) {
     err.textContent = `Could not load the patient geometry: ${e.message}`;
@@ -1165,11 +1179,12 @@ async function renderPatient() {
     const by = Object.fromEntries(ptManifest.variants.map((v) => [v.key, v]));
     list.innerHTML = groups.map(([g, keys]) => `<div class="grp">${g}</div>` + keys.filter((k) => by[k]).map((k) => {
       const v = by[k], detail = v.label.includes("·") ? v.label.split("·").slice(1).join("·").trim() : v.label;
-      return `<button role="radio" data-key="${k}"><b>${esc(PT_SHORT[k] ?? k)}</b><span class="flow">${v.distal_flow_pct.toFixed(0)}% flow</span>` +
+      return `<button role="radio" data-key="${k}"><b>${esc(PT_SHORT[k] ?? k)}</b><span class="flow" data-flow="${k}"></span>` +
         `<small>${esc(detail)}</small></button>`;
     }).join("")).join("");
   }
   list?.querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.key === ptVariant));
+  list?.querySelectorAll("[data-flow]").forEach((el) => { el.textContent = `${ptResults[el.dataset.flow].flowPct.toFixed(0)}% flow`; });
   $("#pt-subject").textContent = ptManifest.subject;
   $("#pt-color").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === ptColor));
   // WSS scale fixed to the healthy lumen's range (floor 5 Pa) so lesions read as hot, not rescaled away
@@ -1179,7 +1194,7 @@ async function renderPatient() {
     if (geomMode !== "patient") return;
     range = [0, Math.max(5, 3 * Math.max(...ptHealthy.profile.wss_Pa.slice(1, -1)))];
   } else if (ptColor === "diameter") range = [0, Math.max(...ptMeta.profile.D_healthy_mm)];
-  const used = patient.color(ptColor, range);
+  const used = patient.color(ptColor, range, ptResults[ptVariant].profile);
   const legend = document.querySelector(".legend");
   legend.style.display = used ? "" : "none";
   if (used) updateLegend({ label: ptColor === "wss" ? "WSS, 1D estimate (Pa)" : "Lumen diameter (mm)", cmap: ptColor === "wss" ? "inferno" : "viridis" }, used);
@@ -1192,27 +1207,50 @@ async function renderPatient() {
   $("#pt-attrib").innerHTML = `${esc(ptManifest.attribution)} <a href="https://doi.org/10.6084/m9.figshare.26965450" target="_blank" rel="noopener">Data</a> · ` +
     `<a href="https://github.com/jhayesf-arch/BVM/blob/main/docs/cfd-variants-${ptManifest.subject}.md" target="_blank" rel="noopener">How these were built</a>`;
   renderPatientTable();
+  renderPatientOxygen();
   renderPatientCharts();
   writeHash();
 }
 
 function renderPatientTable() {
-  const v = ptManifest.variants, by = Object.fromEntries(v.map((x) => [x.key, x]));
+  const v = ptManifest.variants, by = Object.fromEntries(v.map((x) => [x.key, x])), R = ptResults;
   const restored = (k) => {
-    const pre = by[k.includes("thrombectomy") ? "occluded_thrombus95" : "occluded_icas70"];
+    const pre = R[k.includes("thrombectomy") ? "occluded_thrombus95" : "occluded_icas70"], post = R[k];
     if (!k.startsWith("recanalized") || !pre) return "—";
-    return `${(100 * (by[k].distal_flow_pct - pre.distal_flow_pct) / (100 - pre.distal_flow_pct)).toFixed(0)}%`;
+    const ref = R.healthy.flowPct, r = (100 * (post.flowPct - pre.flowPct)) / (ref - pre.flowPct);
+    return r > 100.5 ? "full" : `${Math.max(r, 0).toFixed(0)}%`;
   };
   $("#pt-table").innerHTML = `<thead><tr><th></th><th>Distal flow</th><th>ΔP M1</th><th>Restored</th></tr></thead><tbody>` +
     v.map((x) => `<tr data-key="${x.key}" class="${x.key === ptVariant ? "sel" : ""}"><td>${PT_SHORT[x.key] ?? x.key}${x.checks_pass ? "" : " ⚠"}</td>` +
-      `<td>${x.distal_flow_pct.toFixed(0)}%</td><td>${x.dP_M1_mmHg.toFixed(1)}</td><td>${restored(x.key)}</td></tr>`).join("") + `</tbody>`;
-  const cur = by[ptVariant];
+      `<td>${R[x.key].flowPct.toFixed(0)}%</td><td>${R[x.key].dpMmHg.toFixed(1)}</td><td>${restored(x.key)}</td></tr>`).join("") + `</tbody>`;
+  const cur = by[ptVariant], r = R[ptVariant];
   $("#pt-note").textContent = `${cur.label}. ${cur.throat_diameter_mm ? `Measured throat ${cur.throat_diameter_mm.toFixed(2)} mm (${(100 * cur.throat_ratio).toFixed(1)}% of the local diameter). ` : ""}` +
-    `Distal flow ${cur.distal_flow_mL_min.toFixed(1)} mL/min. Device outcomes are prescribed lumens (app's device rules), not simulated device mechanics. Click a row or a lumen on the left to view it.`;
+    `Distal flow ${r.qMlMin.toFixed(1)} mL/min. Flow % is relative to this healthy lumen at a normal hematocrit (45%). ` +
+    `Device outcomes are prescribed lumens (app's device rules), not simulated device mechanics. Click a row or a lumen on the left to view it.`;
+}
+
+function renderPatientOxygen() {
+  const v = ptManifest.variants, R = ptResults;
+  const healthyTissue = (params.cbfNormal * oxygenContent({ ...params, hct: 45 })) / 100;   // normal blood, healthy lumen
+  const f = (x, d = 1) => (x == null || !isFinite(x) ? "—" : (+x.toFixed(d)).toLocaleString());
+  $("#pt-oxygen").innerHTML = `<thead><tr><th></th><th>O₂ to territory</th><th>CBF</th><th>Extraction needed</th></tr></thead><tbody>` +
+    v.map((x) => {
+      const o = R[x.key].oxygen;
+      return `<tr data-key="${x.key}" class="${x.key === ptVariant ? "sel" : ""}"><td>${PT_SHORT[x.key] ?? x.key}</td>` +
+        `<td>${f(o.DO2_mL_min, 1)} <span class="muted">(${f((100 * o.DO2_tissue_mL_100g_min) / healthyTissue, 0)}%)</span></td>` +
+        `<td>${f(o.CBF_mL_100g_min, 0)}</td><td>${f(o.required_OEF, 2)} <span class="badge oef-${o.band}">${OEF_TXT[o.band].replace(" (misery perfusion)", "")}</span></td></tr>`;
+    }).join("") + `</tbody>`;
+  const r = R[ptVariant];
+  $("#pt-oxygen-note").textContent =
+    `mL O₂/min, with % of a healthy vessel's delivery at normal blood (45% hematocrit). CBF in mL/100 g/min. ` +
+    `O₂ content is ${f(r.CaO2, 1)} mL/dL in every lumen, upstream and downstream, so lesions change delivery only through flow. ` +
+    `Extraction needed = CMRO₂ ÷ (CBF·CaO₂/100): ≤ 0.45 normal; up to ${params.oefMax} compensated (misery perfusion); above that, demand unmet. ` +
+    `${params.hct !== 45 ? `At ${params.hct}% hematocrit, viscosity in this M1 is ×${(r.muEff / 0.0035).toFixed(2)} and downstream resistance ×${r.distalScale.toFixed(2)}. ` : ""}` +
+    `This geometry has no perforators (removed during segmentation), and collaterals and autoregulation are not modeled.`;
 }
 
 function renderPatientCharts() {
-  const p = ptMeta.profile, s = p.s_mm, xr = [0, s[s.length - 1]];
+  const p = ptResults[ptVariant].profile, s = p.s_mm, xr = [0, s[s.length - 1]];
   charts.diam.set([
     { x: s, y: p.D_healthy_mm, color: "#8a97a8", dashed: true, label: "healthy" },
     { x: s, y: p.D_mm, label: PT_SHORT[ptVariant] ?? ptVariant },
@@ -1227,12 +1265,17 @@ async function exportPatient(kind) {
   if (kind === "stl") { download(`${tag}_ext_in10D_out5D_mm.stl`, await (await fetch(`data/patient/${PATIENT_SID}/${ptVariant}.stl`)).blob(), "model/stl"); return true; }
   if (kind === "png") { download(`${tag}.png`, patient.snapshot()); return true; }
   if (kind === "csv") {
-    const p = ptMeta.profile, rows = ["s_mm,D_mm,D_healthy_mm,p_rel_inlet_mmHg,reynolds,wss_Pa"];
+    const p = ptResults[ptVariant].profile, rows = ["s_mm,D_mm,D_healthy_mm,p_rel_inlet_mmHg,reynolds,wss_Pa"];
     p.s_mm.forEach((v, i) => rows.push([v, p.D_mm[i], p.D_healthy_mm[i], p.p_mmHg[i], p.re[i], p.wss_Pa[i]].join(",")));
     download(`${tag}_m1_profile.csv`, rows.join("\n") + "\n", "text/csv");
     return true;
   }
-  if (kind === "json") { download(`${tag}.json`, JSON.stringify({ manifest: ptManifest, variant: ptVariant, profile: ptMeta.profile }, null, 2), "application/json"); return true; }
+  if (kind === "json") {
+    const r = ptResults[ptVariant];
+    download(`${tag}.json`, JSON.stringify({ manifest: ptManifest, variant: ptVariant, blood: { hct: params.hct, hctCouple: params.hctCouple, sao2: params.sao2, pao2: params.pao2, cmro2: params.cmro2 },
+      result: { distal_flow_mL_min: r.qMlMin, flow_pct: r.flowPct, dP_M1_mmHg: r.dpMmHg, CaO2: r.CaO2, oxygen: r.oxygen }, profile: r.profile }, null, 2), "application/json");
+    return true;
+  }
   return false;
 }
 
@@ -1243,6 +1286,7 @@ function wirePatient() {
   $("#pt-variants")?.addEventListener("click", (e) => { const b = e.target.closest("button[data-key]"); if (b) { ptVariant = b.dataset.key; renderPatient(); } });
   $("#pt-color")?.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { ptColor = b.dataset.value; renderPatient(); } });
   $("#pt-table")?.addEventListener("click", (e) => { const r = e.target.closest("tr[data-key]"); if (r) { ptVariant = r.dataset.key; renderPatient(); } });
+  $("#pt-oxygen")?.addEventListener("click", (e) => { const r = e.target.closest("tr[data-key]"); if (r) { ptVariant = r.dataset.key; renderPatient(); } });
 }
 
 // ───────────────────────── wiring ─────────────────────────

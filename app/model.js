@@ -88,7 +88,7 @@ export function oefBand(oef, oefMax) {
   return "unmet";
 }
 
-function territoryOxygen(qMlMin, qRefMlMin, p) {
+export function territoryOxygen(qMlMin, qRefMlMin, p) {
   const cao2 = oxygenContent(p), out = { DO2_mL_min: (qMlMin * cao2) / 100 };
   if (qRefMlMin) {
     const cbf = ((p.cbfNormal ?? 50) * qMlMin) / qRefMlMin, tissue = (cbf * cao2) / 100;
