@@ -1,7 +1,7 @@
 // Browser self-test for the JS engine and device logic (verification evidence; see
 // docs/credibility-assessment-plan.md). Open app/selftest.html locally or on the live site.
-import * as M from "./model.js";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, defaultOptions, treat } from "./devices.js";
+import * as M from "./model.js?v=202611151625";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, defaultOptions, treat } from "./devices.js?v=202611151625";
 
 export function runSelfTest() {
   const results = [];
