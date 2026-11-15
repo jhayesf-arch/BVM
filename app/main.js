@@ -1,9 +1,9 @@
-import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js";
-import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js";
-import { LineChart, fmt } from "./charts.js";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js";
-import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js";
-import { PatientViewer, solvePatient } from "./patient.js";
+import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151625";
+import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151625";
+import { LineChart, fmt } from "./charts.js?v=202611151625";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151625";
+import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151625";
+import { PatientViewer, solvePatient } from "./patient.js?v=202611151625";
 
 const $ = (sel) => document.querySelector(sel);
 
