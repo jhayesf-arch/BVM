@@ -368,5 +368,3 @@ body.patient-mode .patient-side { display: block !important; }
 .landing-card .btn { align-self: flex-start; padding: 9px 16px; font-size: 13.5px; }
 .landing-scenario select { flex: 1; min-width: 0; }
 @media (max-width: 700px) { .landing-cards { grid-template-columns: 1fr; } }
-.topbar-left { display: flex; align-items: center; gap: 12px; }
-.mode-label { color: var(--muted); font-size: 12.5px; }
