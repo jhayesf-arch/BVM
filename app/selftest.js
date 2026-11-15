@@ -1,7 +1,7 @@
 // Browser self-test for the JS engine and device logic (verification evidence; see
 // docs/credibility-assessment-plan.md). Open app/selftest.html locally or on the live site.
-import * as M from "./model.js?v=202611151735";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, defaultOptions, treat } from "./devices.js?v=202611151735";
+import * as M from "./model.js?v=202611151803";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, defaultOptions, treat } from "./devices.js?v=202611151803";
 
 export function runSelfTest() {
   const results = [];
@@ -72,6 +72,32 @@ export function runSelfTest() {
       try { S({ occlusionPct: o, collateralPct: c, noReflowPct: r, nonNewtonian: true, hct: 35 }); }
       catch (e) { tis.fails.push(`${o}% coll ${c} no-reflow ${r}: ${e.message}`); }
     }
+  }
+
+  // ── pulsatility (mirrors tests/test_pulsatile.py) ──
+  const pg = group("Engine: pulsatile small-signal model");
+  {
+    const chk = (ok, msg) => { pg.cases++; if (!ok) pg.fails.push(msg); };
+    const P = (p) => M.solve({ ...M.DEFAULTS, ...p }, 161).summary;
+    for (const pi of [0, 0.6, 0.9, 1.4]) {
+      const w = M.synth(1, M.waveformCoefficients(pi), 256);
+      const mean = w.reduce((a, b) => a + b, 0) / w.length;
+      chk(Math.abs(mean - 1) < 1e-12 && Math.abs(Math.max(...w) - Math.min(...w) - pi) < 1e-12, `waveform PI ${pi}`);
+    }
+    const h = P({});
+    chk(near(h.pulse.PI_inlet, 0.9, 1e-9) && near(h.pulse.incremental_resistance_ratio, 1, 1e-9), "healthy reference must reproduce PI 0.9");
+    const alt = P({ pulsatilityIndex: 1.3, tauS: 0.4, heartRate: 100 });
+    chk(alt.Q_mL_min === h.Q_mL_min && alt.wss_max === h.wss_max, "pulsatility inputs must not change the mean results");
+    chk(h.pulse.PI_territory > 0 && h.pulse.PI_territory < h.pulse.PI_inlet, "bed compliance should damp territory PI");
+    const pis = [0, 50, 70, 90].map((o) => P({ occlusionPct: o }).pulse.PI_territory);
+    chk(pis[0] >= pis[1] && pis[1] > pis[2] && pis[2] > pis[3], `stenosis should damp distal PI ${pis.map((x) => x.toFixed(3))}`);
+    chk(P({ noReflowPct: 50 }).pulse.PI_inlet > 1.3 * h.pulse.PI_inlet, "no-reflow should raise vessel PI");
+    const s = P({ occlusionPct: 60 });
+    chk(s.pulse.wss_max_systolic_Pa > s.wss_max && s.wss_max > s.pulse.wss_max_diastolic_Pa, "systolic WSS > mean > diastolic");
+    const z = P({ pulsatilityIndex: 0 });
+    chk(Math.abs(z.pulse.PI_inlet) < 1e-12 && near(z.pulse.wss_max_systolic_Pa, z.wss_max, 1e-9), "PI 0 must give steady flow");
+    const c = P({ occlusionPct: 80, collateralPct: 20 }), avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    chk(near(avg(c.pulse.waveform_Q_inlet_mL_min), c.Q_mL_min, 1e-12) && near(avg(c.pulse.waveform_Q_territory_mL_min), c.Q_territory_mL_min, 1e-12), "waveforms must average to the mean flows");
   }
 
   // ── engine: robustness across a parameter grid (both grids the app uses) ──

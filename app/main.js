@@ -1,9 +1,9 @@
-import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151735";
-import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151735";
-import { LineChart, fmt } from "./charts.js?v=202611151735";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151735";
-import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151735";
-import { PatientViewer, solvePatient } from "./patient.js?v=202611151735";
+import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151803";
+import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151803";
+import { LineChart, fmt } from "./charts.js?v=202611151803";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151803";
+import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151803";
+import { PatientViewer, solvePatient } from "./patient.js?v=202611151803";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -45,7 +45,6 @@ const ADVANCED = [
   { key: "cbfNormal", label: "Normal territory CBF", unit: "mL/100g/min", min: 30, max: 80, step: 1 },
   { key: "oefMax", label: "Maximum O₂ extraction fraction", unit: "", min: 0.6, max: 0.95, step: 0.01 },
   { key: "rho", label: "Blood density ρ", unit: "kg/m³", min: 1000, max: 1100, step: 1 },
-  { key: "heartRate", label: "Heart rate (Womersley)", unit: "bpm", min: 40, max: 150, step: 1 },
 ];
 
 // Blood composition and oxygen (bvm/oxygen.py)
@@ -64,6 +63,16 @@ const TISSUE = [
     hint: "Leptomeningeal collaterals: the territory flow they would deliver with the vessel fully occluded. 0 = none (worst case). Roughly: poor < 10%, moderate 10–30%, good > 30% (assumed mapping of collateral grades)." },
   { key: "noReflowPct", label: "No-reflow (microvascular obstruction)", unit: "% of bed", min: 0, max: 90, step: 1, territoryOnly: true,
     hint: "Share of the distal capillary bed obstructed (microthrombi, swollen endothelium). Distal resistance ÷ (1 − share). Limits flow even after the artery is reopened; perforator beds are not affected." },
+];
+
+// Pulsatility (bvm/pulsatile.py); none of these change the mean results
+const PULSE = [
+  { key: "heartRate", label: "Heart rate", unit: "bpm", min: 40, max: 150, step: 1,
+    hint: "Sets the harmonics of the cardiac cycle and the Womersley number." },
+  { key: "pulsatilityIndex", label: "Healthy pulsatility index (PI)", unit: "", min: 0, max: 2, step: 0.01,
+    hint: "Gosling PI = (Qmax − Qmin)/Qmean of the healthy vessel's inflow; fixes the inlet pressure pulse. TCD normal for the MCA ≈ 0.6–1.1. 0 = steady flow." },
+  { key: "tauS", label: "Territory time constant τ = R·C", unit: "s", min: 0.05, max: 0.6, step: 0.01,
+    hint: "Compliance of the downstream bed. ≈ 0.2 s in health (Kasprowicz et al.); longer τ damps pulsation more." },
 ];
 
 // Anatomy-tab shape controls (healthy geometry of the section)
@@ -109,8 +118,8 @@ const FIELDS = {
   wallo2: { label: "Wall O₂ transfer index", cmap: "viridis", zero: true, floor: 1.2 },
 };
 
-const SENS_X = [...FACTORS, BC_CONTROLS.territory[3], ...TISSUE, SHAPE[1], BLOOD[0], BLOOD[1]].map((f) => ({ key: f.key, label: `${f.label}${f.unit ? ` (${f.unit})` : ""}` }));
-const sensDef = (key) => [...FACTORS, ...BC_CONTROLS.territory, ...TISSUE, ...SHAPE, ...BLOOD].find((f) => f.key === key);
+const SENS_X = [...FACTORS, BC_CONTROLS.territory[3], ...TISSUE, PULSE[1], SHAPE[1], BLOOD[0], BLOOD[1]].map((f) => ({ key: f.key, label: `${f.label}${f.unit ? ` (${f.unit})` : ""}` }));
+const sensDef = (key) => [...FACTORS, ...BC_CONTROLS.territory, ...TISSUE, ...PULSE, ...SHAPE, ...BLOOD].find((f) => f.key === key);
 const SENS_Y = [
   { key: "flow_pct", label: "Flow, % of healthy", get: (s) => (s.flow_fraction ?? 1) * 100, bands: true },
   { key: "Q_mL_min", label: "Flow (mL/min)", get: (s) => s.Q_mL_min },
@@ -128,6 +137,9 @@ const SENS_Y = [
   { key: "cbf", label: "Territory CBF (mL/100 g/min)", get: (s) => s.o2_distal.CBF_mL_100g_min ?? NaN },
   { key: "oef", label: "Required O₂ extraction (territory)", oef: true, get: (s) => s.o2_distal.required_OEF ?? NaN },
   { key: "oef_perf", label: "Required O₂ extraction (perforator territory)", oef: true, get: (s) => s.o2_perforators?.required_OEF ?? NaN },
+  { key: "pi_vessel", label: "Pulsatility index, vessel", get: (s) => s.pulse.PI_inlet },
+  { key: "pi_terr", label: "Pulsatility index, territory", get: (s) => s.pulse.PI_territory ?? NaN },
+  { key: "wss_sys", label: "Peak systolic WSS (Pa)", get: (s) => s.pulse.wss_max_systolic_Pa ?? NaN },
 ];
 
 // share of the flow deficit recovered by the device; null when there is no deficit to recover
@@ -226,6 +238,7 @@ function buildControls() {
   for (const f of SHAPE) makeControl(f, $("#shape"));
   for (const f of BLOOD) makeControl(f, $("#blood"), { hint: false });
   for (const f of TISSUE) makeControl(f, $("#tissue"), { hint: false });
+  if ($("#pulse-controls")) for (const f of PULSE) makeControl(f, $("#pulse-controls"), { hint: false });
   if ($("#pt-tissue")) for (const f of TISSUE) makeControl(f, $("#pt-tissue"), { tag: "pt-", hint: false });
   const nnBoxes = ["#non-newtonian", "#pt-non-newtonian"].map($).filter(Boolean);
   for (const nn of nnBoxes) if (!nn.dataset.wired) { nn.addEventListener("change", () => set("nonNewtonian", nn.checked)); nn.dataset.wired = "1"; }
@@ -360,6 +373,7 @@ function compute() {
   updateRestoration(dev);
   renderEndpoints(dev);
   renderOxygen();
+  renderPulse();
   syncSensOptions(dev);
   updateLegend(meta, range);
   const bl = $("#branch-legend");
@@ -513,6 +527,45 @@ function updateRestoration(dev) {
   $("#restore-note").textContent = failed
     ? "Pass set as unsuccessful: the clot stays, so flow is unchanged."
     : `${gain >= 0 ? "+" : ""}${qFmt(gain)} mL/min after treatment.${remaining}${collNote} The bar's white line marks flow before treatment.${hctNote}`;
+}
+
+// ───────────────────────── pulsatility ─────────────────────────
+const pulseChart = $("#c-pulse") ? new LineChart($("#c-pulse"), { title: "Flow over one cycle", unit: "mL/min", zeroBased: true }) : null;
+function renderPulse() {
+  if (!pulseChart) return;
+  const a = pre.summary.pulse, b = post?.summary.pulse ?? null, terr = a.waveform_Q_territory_mL_min != null;
+  const t = [...a.waveform_t, 1].map((x) => x * 60 / params.heartRate);
+  const loop = (y) => [...y, y[0]];
+  const series = [{ x: t, y: loop(a.waveform_Q_inlet_mL_min), color: "#8a97a8" }];
+  if (terr) series.push({ x: t, y: loop(a.waveform_Q_territory_mL_min), color: "#8a97a8", dashed: true });
+  if (b) {
+    series.push({ x: t, y: loop(b.waveform_Q_inlet_mL_min), color: "#4cc2ff" });
+    if (terr) series.push({ x: t, y: loop(b.waveform_Q_territory_mL_min), color: "#4cc2ff", dashed: true });
+  }
+  pulseChart.set(series, { xLabel: "s", xRange: [0, t[t.length - 1]] });
+  const sw = (color, dashed) => `<i style="border-top:2px ${dashed ? "dashed" : "solid"} ${color}"></i>`;
+  $("#pulse-legend").innerHTML = `<span>${sw("#8a97a8")}${sw("#4cc2ff")}into the vessel</span>` +
+    (terr ? `<span>${sw("#8a97a8", 1)}${sw("#4cc2ff", 1)}to the territory</span>` : "") +
+    `<span class="muted">grey before${b ? ", blue after" : ""}</span>`;
+  const f = (v, d = 1) => (v == null || !isFinite(v) ? "—" : (+v.toFixed(d)).toLocaleString());
+  const row = (k, x, y) => `<tr><td>${k}</td><td>${x}</td><td class="${b ? "" : "na"}">${b ? y : "—"}</td></tr>`;
+  const range = (s, key) => `${f(s[`Q_${key}_systolic_mL_min`])} / ${f(s[`Q_${key}_diastolic_mL_min`])}`;
+  let html = `<thead><tr><th></th><th>Before</th><th>After</th></tr></thead>` +
+    row("Vessel inflow, systolic / diastolic, mL/min", range(a, "inlet"), b && range(b, "inlet")) +
+    row("Pulsatility index, vessel", f(a.PI_inlet, 2), b && f(b.PI_inlet, 2));
+  if (terr) html +=
+    row("Territory flow, systolic / diastolic, mL/min", range(a, "territory"), b && range(b, "territory")) +
+    row("Pulsatility index, territory", f(a.PI_territory, 2), b && f(b.PI_territory, 2));
+  html += row("Peak systolic WSS, Pa", f(a.wss_max_systolic_Pa), b && f(b.wss_max_systolic_Pa)) +
+    row("Lowest WSS at end diastole, Pa", f(a.wss_min_diastolic_Pa, 2), b && f(b.wss_min_diastolic_Pa, 2)) +
+    row("Peak systolic Re", f(a.Re_max_systolic, 0), b && f(b.Re_max_systolic, 0)) +
+    row("Systolic ΔP along vessel, mmHg", f(a.dP_vessel_systolic_mmHg, 1), b && f(b.dP_vessel_systolic_mmHg, 1));
+  $("#pulse").innerHTML = html;
+  const damp = terr && a.PI_inlet < 0.8 * params.pulsatilityIndex ? ` The lesion damps the vessel's pulsation (PI ${f(a.PI_inlet, 2)} vs ${f(params.pulsatilityIndex, 2)} healthy): the low-PI, slow-rising "tardus–parvus" pattern TCD shows distal to a tight stenosis.` : "";
+  const rev = a.flow_reversal || b?.flow_reversal ? " Flow reverses in diastole, outside this model's quasi-steady range." : "";
+  $("#pulse-note").textContent = (terr
+    ? `Inlet pulse pressure ${f(a.inlet_pulse_pressure_mmHg)} mmHg, calibrated so the healthy vessel has PI ${f(params.pulsatilityIndex, 2)}. Peak systolic WSS is ${f(a.wss_max_systolic_Pa / pre.summary.wss_max, 2)}× the mean-flow value.`
+    : `Fixed-flow mode prescribes the inflow waveform (PI ${f(params.pulsatilityIndex, 2)}); switch to Brain territory to see damping by the lesion and the downstream bed.`) + damp + rev;
 }
 
 // ───────────────────────── oxygen delivery ─────────────────────────

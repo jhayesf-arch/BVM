@@ -6,7 +6,7 @@
   <title>BVM · Interactive Cerebral Vessel Simulator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=202611151735" />
+  <link rel="stylesheet" href="styles.css?v=202611151803" />
   <script type="importmap">
     {
       "imports": {
@@ -183,6 +183,11 @@
       </section>
 
       <section>
+        <h2>Pulsatility</h2>
+        <div id="pulse-controls"></div>
+      </section>
+
+      <section>
         <h2>Blood &amp; oxygen</h2>
         <div id="blood"></div>
         <label class="check"><input type="checkbox" id="hct-couple" checked /> Viscosity follows hematocrit (Pries 1994)</label>
@@ -341,10 +346,21 @@
       <section class="card endpoints param-only" id="oxygen-card">
         <div class="card-head">
           <h2>Oxygen delivery</h2>
-          <span class="info" title="Fick principle. CaO₂ = 1.34·Hb·SaO₂ + 0.003·PaO₂ is the same upstream and downstream of a blockage (conducting arteries consume negligible O₂), so delivery DO₂ = Q·CaO₂ changes only with flow. Territory CBF = 50 mL/100 g/min × flow ÷ healthy flow (calibrated at Hct 45%). Required OEF = CMRO₂ ÷ (CBF·CaO₂/100): ≤ 0.45 normal, up to the maximum (≈ 0.8) the tissue compensates ('misery perfusion', Baron 1981; Powers 1991), above it demand is unmet. No collaterals or autoregulation are modeled, so this is a worst case.">ⓘ</span>
+          <span class="info" title="Fick principle. CaO₂ = 1.34·Hb·SaO₂ + 0.003·PaO₂ is the same upstream and downstream of a blockage (conducting arteries consume negligible O₂), so delivery DO₂ = Q·CaO₂ changes only with flow. Territory CBF = 50 mL/100 g/min × flow ÷ healthy flow (calibrated at Hct 45%). Required OEF = CMRO₂ ÷ (CBF·CaO₂/100): ≤ 0.45 normal, up to the maximum (≈ 0.8) the tissue compensates ('misery perfusion', Baron 1981; Powers 1991), above it demand is unmet. Collaterals count only if set under Downstream tissue (0 = worst case); autoregulation is not modeled.">ⓘ</span>
         </div>
         <table class="cmp" id="oxygen"></table>
         <p class="note" id="oxygen-note"></p>
+      </section>
+
+      <section class="card endpoints param-only" id="pulse-card">
+        <div class="card-head">
+          <h2>Pulsatility · one cardiac cycle</h2>
+          <span class="info" title="Small-signal harmonics about the mean solution. The inlet pressure pulse is calibrated so the healthy vessel has the chosen pulsatility index (Gosling PI = (Qmax − Qmin)/Qmean; TCD normal for the MCA ≈ 0.6–1.1), using an idealized waveform shape (assumed). The vessel acts through its incremental resistance at the mean flow (so a stenosis, whose loss grows with Q², damps pulsation strongly) and inertance; the territory is a resistance with compliance C = τ/R (τ ≈ 0.2 s, Kasprowicz et al.) plus any collaterals. Systolic and diastolic fields re-run the full model quasi-steadily (Womersley 2–3 in M1); 3D pulsatile CFD resolves the phase lag and near-wall overshoot.">ⓘ</span>
+        </div>
+        <canvas class="chart pulse-chart" id="c-pulse"></canvas>
+        <div class="pulse-legend" id="pulse-legend"></div>
+        <table class="cmp" id="pulse"></table>
+        <p class="note" id="pulse-note"></p>
       </section>
 
       <section class="card endpoints param-only">
@@ -414,6 +430,6 @@
     </aside>
   </main>
 
-  <script type="module" src="main.js?v=202611151735"></script>
+  <script type="module" src="main.js?v=202611151803"></script>
 </body>
 </html>
