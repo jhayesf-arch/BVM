@@ -146,8 +146,26 @@ Notes and limits:
 * **Wall O₂ transfer index.** Color the vessel by the Lévêque scaling (γ̇_w/γ̇_ref)^{1/3} of wall O₂
   supply. Full 3D oxygen transport, with hemoglobin binding, is set out in
   `docs/cfd-howto.md` (sections 9–10).
-* **What is not modeled:** no autoregulation (arterioles dilate before extraction rises) and no
-  collaterals. Treat the results as a worst case.
+* **Shear-thinning blood** (checkbox). Carreau model (Cho & Kensey 1991), scaled so its high-shear
+  limit equals the viscosity above, evaluated at each station's wall shear rate 4Q/(πr³). It raises
+  viscosity about 10% in a healthy M1 and much more where flow is slow, e.g. behind a near-occlusion.
+  Most resistance sits in the microvascular bed (already an in vivo law), so territory flow changes
+  little; WSS rises with the apparent viscosity.
+* **What is not modeled:** no autoregulation (arterioles dilate before extraction rises). With
+  collateral supply at 0 the results are a worst case.
+
+### Downstream tissue (Brain territory mode)
+
+* **Collateral supply.** Leptomeningeal collaterals feed the distal territory from a pial supply held
+  at the healthy outlet pressure, through a resistance set so that, with the vessel fully occluded,
+  they alone deliver the chosen share of healthy territory flow. They carry no flow in health and
+  fall back as the vessel reopens. The mapping to collateral grades (poor < 10%, moderate 10–30%,
+  good > 30%) is an assumption. Perforators are end arteries and get no collateral supply.
+* **No-reflow.** The share of the distal capillary bed that is obstructed; the distal resistance is
+  divided by (1 − share). It caps flow even after a successful recanalization ("futile
+  recanalization"). Perforator beds are not affected.
+* Distal territory flow, the restoration card and the oxygen card all use vessel outflow plus
+  collateral inflow. The secondary-endpoints table shows the two parts.
 
 ### Device panel (top of the 3D view)
 
@@ -307,7 +325,7 @@ Baseline (straight, 3.0 mm, Q = 120 mL/min):
 * E = 1 MPa: the lumen dilates to about 3.17 mm, giving Re ≈ 243
 
 ## Limitations (read before citing numbers)
-* **Reduced-order, steady, Newtonian.** This is not a 3D Navier–Stokes solution. It does not resolve
+* **Reduced-order and steady.** Blood is Newtonian unless shear-thinning is switched on. This is not a 3D Navier–Stokes solution. It does not resolve
   recirculation, jet impingement or post-stenotic turbulence. Use the exported STL in a 3D CFD solver
   (OpenFOAM, SimVascular, FEniCS) to get local flow fields.
 * **Entrance effects.** The entrance length (~39 mm at baseline) is longer than the 20 mm segment.
@@ -315,6 +333,7 @@ Baseline (straight, 3.0 mm, Q = 120 mL/min):
 * **Wall law.** The linear thin-wall law is only valid below about 10% strain. Soft hydrogel
   substrates (tens of kPa) exceed this, and the model warns when they do. Those cases need
   hyperelastic FSI.
-* **Territory model.** No autoregulation, collaterals or pulsatility are modeled. The ischemia bands
+* **Territory model.** No autoregulation or pulsatility; collaterals and no-reflow are lumped
+  resistances with assumed parameters. The ischemia bands
   map flow fraction onto approximate CBF thresholds (penumbra below ~40%, core below ~20% of normal).
   They are heuristic labels, not predictions of infarction.

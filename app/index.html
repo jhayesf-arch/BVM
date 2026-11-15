@@ -6,7 +6,7 @@
   <title>BVM · Interactive Cerebral Vessel Simulator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=202611151625" />
+  <link rel="stylesheet" href="styles.css?v=202611151646" />
   <script type="importmap">
     {
       "imports": {
@@ -141,9 +141,15 @@
       </section>
 
       <section>
+        <h2>Downstream tissue</h2>
+        <div id="tissue"></div>
+      </section>
+
+      <section>
         <h2>Blood &amp; oxygen</h2>
         <div id="blood"></div>
         <label class="check"><input type="checkbox" id="hct-couple" checked /> Viscosity follows hematocrit (Pries 1994)</label>
+        <label class="check" title="Carreau model (Cho &amp; Kensey 1991): blood thickens at low shear. Its high-shear limit equals the viscosity above, so it raises viscosity most where flow is slow (behind a near-occlusion, recirculation). Evaluated at each station's wall shear rate."><input type="checkbox" id="non-newtonian" /> Shear-thinning blood (Carreau, non-Newtonian)</label>
         <p class="hint" id="blood-derived"></p>
       </section>
 
@@ -371,6 +377,6 @@
     </aside>
   </main>
 
-  <script type="module" src="main.js?v=202611151625"></script>
+  <script type="module" src="main.js?v=202611151646"></script>
 </body>
 </html>
