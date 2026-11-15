@@ -1,9 +1,9 @@
-import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151712";
-import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151712";
-import { LineChart, fmt } from "./charts.js?v=202611151712";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151712";
-import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151712";
-import { PatientViewer, solvePatient } from "./patient.js?v=202611151712";
+import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151718";
+import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151718";
+import { LineChart, fmt } from "./charts.js?v=202611151718";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151718";
+import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151718";
+import { PatientViewer, solvePatient } from "./patient.js?v=202611151718";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -1035,7 +1035,7 @@ function computeSensitivity() {
 // ───────────────────────── presets, hash, export ─────────────────────────
 function buildPresets() {
   const sel = $("#preset");
-  sel.innerHTML = `<option value="">Custom</option>` +
+  sel.innerHTML = `<option value="">Current settings</option>` +
     SECTIONS.map((s) => `<optgroup label="${esc(s.name)}"><option value="s:${s.id}:-1">${esc(s.short)} · healthy</option>${
       s.scenarios.map((sc, i) => `<option value="s:${s.id}:${i}">${esc(s.short)} · ${esc(sc.name)}</option>`).join("")}</optgroup>`).join("") +
     `<optgroup label="MCA M1 · parameter studies">${PRESETS.map((p, i) => `<option value="p:${i}">${p.name}</option>`).join("")}</optgroup>`;
@@ -1158,6 +1158,8 @@ const PT_SHORT = { healthy: "Healthy", occluded_icas70: "ICAS 70%", occluded_thr
 
 async function setGeomMode(mode) {
   geomMode = mode;
+  const ml = $("#mode-label");
+  if (ml) ml.textContent = mode === "patient" ? "Patient CTA model" : "Parametric model";
   document.body.classList.toggle("patient-mode", mode === "patient");
   $("#geom-mode").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === mode));
   viewer.renderer.domElement.style.visibility = mode === "patient" ? "hidden" : "";
@@ -1339,6 +1341,25 @@ wirePatient();
 syncControls();
 compute();
 setGeomMode(geomMode);
+wireLanding();
+
+// Landing page: the model choice. Shown on a fresh visit; a shared link (settings in the URL) opens the app directly.
+function wireLanding() {
+  const landing = $("#landing");
+  if (!landing) return;
+  const open = () => { landing.hidden = false; landing.querySelector(`button[data-value="${geomMode}"]`)?.focus(); };
+  const close = () => { landing.hidden = true; };
+  // #geom-mode's own listener (wirePatient) switches the mode; this one only closes the page
+  $("#geom-mode").addEventListener("click", (e) => { if (e.target.closest("button[data-value]")) close(); });
+  $("#preset").addEventListener("change", () => {
+    if ($("#preset").value === "" || landing.hidden) return;
+    if (geomMode !== "parametric") setGeomMode("parametric");
+    close();
+  });
+  $("#home")?.addEventListener("click", open);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !landing.hidden) close(); });
+  if (!location.hash) open();
+}
 
 // exposed for debugging and the Python parity check
 window.bvm = { solve, stl, get params() { return params; }, get result() { return result; }, throatRatio };

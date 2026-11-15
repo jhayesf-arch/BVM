@@ -6,7 +6,7 @@
   <title>BVM · Interactive Cerebral Vessel Simulator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=202611151712" />
+  <link rel="stylesheet" href="styles.css?v=202611151718" />
   <script type="importmap">
     {
       "imports": {
@@ -17,23 +17,44 @@
   </script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo" aria-hidden="true"></span>
-      <div>
-        <h1>Cerebral Vessel Simulator</h1>
-        <p>Blood-vessel-mimic companion model · ischemic disease</p>
+  <!-- ───────── Landing: choose the model (shown on a fresh visit; shared links skip it) ───────── -->
+  <div class="landing" id="landing" hidden>
+    <div class="landing-inner">
+      <div class="landing-brand">
+        <span class="logo big" aria-hidden="true"></span>
+        <div>
+          <h1>Cerebral Vessel Simulator</h1>
+          <p>Blood-vessel-mimic companion model · ischemic disease</p>
+        </div>
+      </div>
+      <p class="landing-lead">Choose how to build the vessel. You can come back here at any time with <b>Change model</b>.</p>
+      <div class="landing-cards" id="geom-mode" role="radiogroup" aria-label="Geometry">
+        <div class="landing-card">
+          <h2>Parametric</h2>
+          <p>An idealized vessel built from sliders: five stroke-prone sections, any stenosis or clot, wall
+            stiffness, blood and downstream tissue, and the device panel.</p>
+          <label class="select-wrap landing-scenario">
+            <span>Scenario</span>
+            <select id="preset"></select>
+          </label>
+          <button class="btn" role="radio" data-value="parametric">Open parametric model →</button>
+        </div>
+        <div class="landing-card">
+          <h2>Patient CTA</h2>
+          <p>A real middle cerebral artery bifurcation from a CT angiogram (CMHA dataset, CC BY), healthy,
+            occluded and after treatment, with the same 1D model run on its measured M1.</p>
+          <button class="btn" role="radio" data-value="patient">Open patient model →</button>
+        </div>
       </div>
     </div>
+  </div>
+
+  <header class="topbar">
+    <div class="topbar-left">
+      <button id="home" class="btn ghost" title="Back to the model choice">← Change model</button>
+      <span class="mode-label" id="mode-label"></span>
+    </div>
     <div class="top-actions">
-      <div class="segmented small geom-mode" id="geom-mode" role="radiogroup" aria-label="Geometry">
-        <button role="radio" data-value="parametric" title="Idealized vessel built from the sliders">Parametric</button>
-        <button role="radio" data-value="patient" title="Patient MCA bifurcation from CTA (CMHA dataset, CC BY)">Patient CTA</button>
-      </div>
-      <label class="select-wrap param-only">
-        <span>Scenario</span>
-        <select id="preset"></select>
-      </label>
       <button id="reset" class="btn ghost" title="Back to the healthy M1 baseline">Reset</button>
       <div class="menu">
         <button class="btn" id="export-btn" aria-haspopup="true" aria-expanded="false">Export ▾</button>
@@ -382,6 +403,6 @@
     </aside>
   </main>
 
-  <script type="module" src="main.js?v=202611151712"></script>
+  <script type="module" src="main.js?v=202611151718"></script>
 </body>
 </html>
