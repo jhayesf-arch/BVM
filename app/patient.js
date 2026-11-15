@@ -5,43 +5,56 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
-import { sampleMap } from "./viewer.js?v=202611151646";
-import { MMHG, MLMIN, bloodFactors, oxygenContent, territoryOxygen } from "./model.js?v=202611151646";
+import { sampleMap } from "./viewer.js?v=202611151712";
+import { MMHG, MLMIN, bloodFactors, carreauFactor, oxygenContent, territoryOxygen } from "./model.js?v=202611151712";
 
 /**
- * Reduced-order model on one patient lumen, re-solved for the current blood properties.
+ * Reduced-order model on one patient lumen, re-solved for the current blood and tissue settings.
  * Mirrors territory_flow() / lesion_dp() in scripts/cmha_variants.py: Poiseuille on the measured M1 area
  * profile plus the Young–Tsai expansion loss, territory BC (inlet 85 mmHg, venous 10 mmHg, distal
- * resistance calibrated on the healthy lumen at 153 mL/min and a hematocrit of 45%). Hematocrit scales
- * the viscosity in M1 and the distal resistance exactly as the parametric engine does.
+ * resistance calibrated on the healthy lumen at 153 mL/min and a hematocrit of 45%). At the default
+ * settings it reproduces those exported values. On top of that, exactly as the parametric engine does:
+ *   hematocrit scales the viscosity in M1 and the distal resistance (Pries 1994);
+ *   shear-thinning blood (p.nonNewtonian) applies the Carreau factor at each station's wall shear rate,
+ *     in the calibration too;
+ *   collaterals (p.collateralPct) feed the territory from a pial supply at the healthy outlet pressure;
+ *   no-reflow (p.noReflowPct) divides the distal resistance by (1 − share).
+ * flowPct / qMlMin are territory flow (M1 outflow + collateral inflow).
  */
 export function solvePatient(meta, p) {
   const c = meta.constants, prof = meta.profile;
   const s = prof.s_mm.map((x) => x * 1e-3), Dh = prof.D_healthy_mm, Dl = prof.D_mm, n = s.length;
   const { muEff, distalScale } = bloodFactors({ ...p, mu: c.mu_Pa_s, diameterMm: Dh[0] });
-  const rho = c.rho_kg_m3, q0 = c.q_ref_mL_min * MLMIN;
+  const rho = c.rho_kg_m3, q0 = c.q_ref_mL_min * MLMIN, nn = !!p.nonNewtonian;
   let iT = 0;
   for (let i = 1; i < n; i++) if (Dl[i] / Dh[i] < Dl[iT] / Dh[iT]) iT = i;
+  const muAt = (mu, d, q) => (nn ? mu * carreauFactor((4 * q) / (Math.PI * (d / 2e3) ** 3)) : mu);
   const parts = (D, mu, q) => {
     let visc = 0;
-    const g = D.map((d) => (8 * mu * q) / (Math.PI * (d / 2e3) ** 4));
+    const m = D.map((d) => muAt(mu, d, q));
+    const g = D.map((d, i) => (8 * m[i] * q) / (Math.PI * (d / 2e3) ** 4));
     for (let i = 1; i < n; i++) visc += 0.5 * (g[i] + g[i - 1]) * (s[i] - s[i - 1]);
     let loss = 0;
     if (D === Dl) {
       const a0 = Math.PI * (Dh[iT] / 2e3) ** 2, a1 = Math.PI * (Dl[iT] / 2e3) ** 2;
       if (a1 < 0.999 * a0) loss = c.young_tsai_kt * (rho / 2) * (q / a0) ** 2 * (a0 / a1 - 1) ** 2;
     }
-    return { visc: visc / MMHG, loss: loss / MMHG, g };
+    return { visc: visc / MMHG, loss: loss / MMHG, g, m };
   };
   const avail = c.p_in_mmHg - c.p_venous_mmHg;
   const dpH = parts(Dh, c.mu_Pa_s, q0).visc;               // calibration: healthy lumen, Hct 45%
-  const rD = ((avail - dpH) / q0) * distalScale;
+  const rBed = ((avail - dpH) / q0) * distalScale;          // healthy, unobstructed bed (mmHg per m³/s)
+  const rD = rBed / (1 - (p.noReflowPct ?? 0) / 100);
+  const cf = (p.collateralPct ?? 0) / 100, rC = cf > 0 ? rBed * (1 / cf - 1) : Infinity;
+  const coll = (pEnd) => Math.max(0, (avail - dpH - pEnd) / rC);   // pressures above venous; supply = healthy outlet
+  const excess = (q) => { const pp = parts(Dl, muEff, q), pEnd = avail - pp.visc - pp.loss; return pp.visc + pp.loss + rD * (q + coll(pEnd)) - avail; };
   let lo = q0 * 1e-6, hi = q0 * 3;
   for (let k = 0; k < 80; k++) {
-    const q = 0.5 * (lo + hi), pp = parts(Dl, muEff, q);
-    if (pp.visc + pp.loss + rD * q > avail) hi = q; else lo = q;
+    const q = 0.5 * (lo + hi);
+    if (excess(q) > 0) hi = q; else lo = q;
   }
-  const q = 0.5 * (lo + hi), { visc, loss, g } = parts(Dl, muEff, q);
+  const q = 0.5 * (lo + hi), { visc, loss, g, m } = parts(Dl, muEff, q);
+  const qc = coll(avail - visc - loss);
   // profiles along M1 at that flow (same construction as the export)
   const pr = new Array(n).fill(0);
   let cum = 0;
@@ -50,15 +63,16 @@ export function solvePatient(meta, p) {
     const sEnd = (meta.lesion_span_mm[0] + meta.lesion_span_mm[1] / 2) * 1e-3;
     for (let i = 0; i < n; i++) pr[i] += loss * MMHG * Math.min(Math.max((s[i] - s[iT]) / Math.max(sEnd - s[iT], 1e-9), 0), 1);
   }
-  const qMl = q / MLMIN;
+  const qMl = (q + qc) / MLMIN;
   return {
-    qMlMin: qMl, flowPct: (100 * q) / q0, dpMmHg: visc + loss, muEff, distalScale,
+    qMlMin: qMl, flowPct: (100 * (q + qc)) / q0, qM1MlMin: q / MLMIN, qCollateralMlMin: qc / MLMIN,
+    dpMmHg: visc + loss, muEff, distalScale, muMax: Math.max(...m),
     oxygen: territoryOxygen(qMl, c.q_ref_mL_min, p), CaO2: oxygenContent(p),
     profile: {
       s_mm: prof.s_mm, D_mm: Dl, D_healthy_mm: Dh,
       p_mmHg: pr.map((x) => -x / MMHG),
-      wss_Pa: Dl.map((d) => (4 * muEff * q) / (Math.PI * (d / 2e3) ** 3)),
-      re: Dl.map((d) => (4 * rho * q) / (Math.PI * muEff * d * 1e-3)),
+      wss_Pa: Dl.map((d, i) => (4 * m[i] * q) / (Math.PI * (d / 2e3) ** 3)),
+      re: Dl.map((d, i) => (4 * rho * q) / (Math.PI * m[i] * d * 1e-3)),
     },
   };
 }
