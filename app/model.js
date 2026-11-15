@@ -553,6 +553,7 @@ export function summarize(res) {
   out.mu_effective = res.muEff ?? p.mu;
   out.distal_resistance_scale = res.distalScale ?? 1;
   out.mu_apparent_max = res.muNode ? max(res.muNode) : out.mu_effective;
+  out.mu_apparent_min = res.muNode ? min(res.muNode) : out.mu_effective;
   out.hemoglobin = hemoglobin(p);
   out.CaO2 = oxygenContent(p);
   const toMl = 1 / MLMIN, refB = res.referenceBranchQ?.reduce((a, b) => a + b, 0) ?? 0;

@@ -183,7 +183,8 @@ class VesselSolution:
         out["blood"] = {"hematocrit_pct": b.hematocrit, "mu_effective_Pa_s": mu_eff, "distal_resistance_scale": self.distal_scale,
                         "hemoglobin_g_dL": self.oxygen.hemoglobin(b.hematocrit), "CaO2_mL_dL": self.oxygen.content(b.hematocrit),
                         "non_newtonian": b.non_newtonian,
-                        "mu_apparent_max_Pa_s": float(np.max(self.mu_apparent)) if self.mu_apparent is not None else mu_eff}
+                        "mu_apparent_max_Pa_s": float(np.max(self.mu_apparent)) if self.mu_apparent is not None else mu_eff,
+                        "mu_apparent_min_Pa_s": float(np.min(self.mu_apparent)) if self.mu_apparent is not None else mu_eff}
         q_terr = self.q_out + self.q_collateral
         to_ml = 1 / ML_MIN_TO_M3_S
         ox = {"inlet": territory_oxygen(self.q * to_ml, None, b.hematocrit, self.oxygen)}
