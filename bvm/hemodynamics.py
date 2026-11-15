@@ -17,6 +17,7 @@ from scipy.integrate import cumulative_trapezoid
 from scipy.optimize import brentq
 
 from .geometry import VesselGeometry, build_geometry
+from .pulsatile import pulsatile_summary
 from .oxygen import HCT_REF, Oxygen, territory_oxygen, viscosity_ratio, wall_o2_index
 from .params import MMHG_TO_PA, ML_MIN_TO_M3_S, Blood, FlowConditions, Vessel
 
@@ -93,6 +94,7 @@ class VesselSolution:
     mu_effective: float | None = None   # viscosity actually used (after hematocrit coupling)
     mu_apparent: np.ndarray | None = None   # per-station viscosity (differs from mu_effective if non-Newtonian)
     q_collateral: float = 0.0           # m³/s entering the territory through collaterals (territory BC)
+    pulsatile: dict | None = None       # pulsatile_summary(): harmonics about this mean state
     distal_scale: float = 1.0           # microvascular resistance factor from hematocrit
     wss_reference: float | None = None  # healthy inlet WSS at the reference flow (for the wall O₂ index)
     warnings: list[str] = field(default_factory=list)
@@ -175,6 +177,8 @@ class VesselSolution:
             },
             "warnings": list(self.warnings),
         }
+        if self.pulsatile is not None:
+            out["pulsatile"] = self.pulsatile
         mu_eff = self.mu_effective or b.mu
         out["blood"] = {"hematocrit_pct": b.hematocrit, "mu_effective_Pa_s": mu_eff, "distal_resistance_scale": self.distal_scale,
                         "hemoglobin_g_dL": self.oxygen.hemoglobin(b.hematocrit), "CaO2_mL_dL": self.oxygen.content(b.hematocrit),
@@ -380,8 +384,15 @@ def solve(vessel: Vessel, blood: Blood | None = None, flow: FlowConditions | Non
     else:
         branch_r = np.zeros(0)
 
+    ctx = {"flow": flow, "geom": geom, "blood_eff": blood_eff, "blood_ref": blood, "p_in": p_in, "p_cal": p_cal,
+           "p_out": p_out, "branch_r": branch_r, "q0": q0, "ref_bq": ref_bq}
+
+    def pulse(sol):
+        sol.pulsatile = pulsatile_summary({**ctx, "sol": sol})
+        return sol
+
     if flow.bc == "fixed_flow":
-        return finish(_solve_at_flow(geom, blood_eff, flow, q0, p_in, branch_r=branch_r, p_out=p_out))
+        return pulse(finish(_solve_at_flow(geom, blood_eff, flow, q0, p_in, branch_r=branch_r, p_out=p_out)))
 
     def q_collateral(p_end: float) -> float:
         return max(0.0, (p_coll - p_end) / r_coll)
@@ -395,4 +406,6 @@ def solve(vessel: Vessel, blood: Blood | None = None, flow: FlowConditions | Non
     sol = _solve_at_flow(geom, blood_eff, flow, q, p_in, branch_r=branch_r, p_out=p_out)
     sol.reference_q, sol.reference_q_out, sol.reference_branch_q = q0, ref.q_out, ref_bq
     sol.q_collateral = q_collateral(sol.pressure[-1])
-    return finish(sol)
+    ctx.update({"ref": ref, "ref_geom": ref_geom, "r_distal": r_distal, "r_coll": r_coll,
+                "r_bed_healthy": (ref.pressure[-1] - p_out) / ref.q_out})
+    return pulse(finish(sol))

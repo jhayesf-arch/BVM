@@ -172,6 +172,19 @@ Notes and limits:
 * Distal territory flow, the restoration card and the oxygen card all use vessel outflow plus
   collateral inflow. The secondary-endpoints table shows the two parts.
 
+### Pulsatility
+
+The steady solver gives the mean flow; pulsation is added as heart-rate harmonics through a circuit
+linearized about that mean (`bvm/pulsatile.py`): the vessel's incremental resistance dΔP/dQ (from the
+full nonlinear model, so a stenosis, whose loss grows with Q², damps pulsation strongly) and inertance,
+feeding the territory bed (resistance with compliance C = τ/R, τ ≈ 0.2 s per Kasprowicz et al.) and any
+collaterals. The inlet pressure pulse is calibrated so the healthy vessel has the chosen Gosling PI
+(TCD normal for the MCA ≈ 0.6–1.1) with an idealized waveform shape (assumed). The **Pulsatility card**
+plots flow over one cycle before and after a device and lists systolic/diastolic flow, vessel and
+territory PI, and peak-systolic WSS, Re and ΔP (the full model re-run quasi-steadily at those
+instants; Womersley 2–3 in M1). It reproduces the low-PI "tardus–parvus" damping distal to a tight
+stenosis and the raised PI of a high-resistance (no-reflow) bed. The mean results are unchanged.
+
 ### Device panel (top of the 3D view)
 
 * **Lesion switch.** Choose **Plaque** (chronic intracranial atherosclerotic stenosis, ICAS) or
@@ -338,7 +351,8 @@ Baseline (straight, 3.0 mm, Q = 120 mL/min):
 * **Wall law.** The linear thin-wall law is only valid below about 10% strain. Soft hydrogel
   substrates (tens of kPa) exceed this, and the model warns when they do. Those cases need
   hyperelastic FSI.
-* **Territory model.** No autoregulation or pulsatility; collaterals and no-reflow are lumped
-  resistances with assumed parameters. The ischemia bands
+* **Territory model.** No autoregulation; collaterals and no-reflow are lumped resistances with
+  assumed parameters. Pulsatility is a small-signal, quasi-steady layer on the mean solution (no
+  wave reflection along the vessel, no Womersley profile); peak WSS phase and overshoot need 3D CFD. The ischemia bands
   map flow fraction onto approximate CBF thresholds (penumbra below ~40%, core below ~20% of normal).
   They are heuristic labels, not predictions of infarction.

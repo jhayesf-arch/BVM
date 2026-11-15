@@ -123,7 +123,7 @@ class FlowConditions:
     inlet_pressure_mmhg: float = 85.0     # mean pressure at the M1 inlet (assumption)
     outflow_pressure_mmhg: float = 10.0   # venous/ICP back-pressure of the territory (assumption)
     external_pressure_mmhg: float = 0.0   # pressure outside the wall (0 for a bench BVM, ~ICP in vivo)
-    heart_rate_bpm: float = 70.0          # only used for the Womersley number
+    heart_rate_bpm: float = 70.0          # Womersley number and the pulsatile harmonics (bvm/pulsatile.py)
     bc: str = "fixed_flow"
     # Pressure lost upstream of the inlet (systemic hypotension, proximal disease). The territory
     # resistance is still calibrated at inlet_pressure_mmhg, so this lowers perfusion.
@@ -137,6 +137,10 @@ class FlowConditions:
     # Territory BC only. No-reflow (microvascular obstruction): % of the distal microvascular bed
     # obstructed; the distal resistance is divided by (1 - fraction). Perforator beds are not affected.
     no_reflow_pct: float = 0.0
+    # Pulsatility (bvm/pulsatile.py): Gosling PI of the healthy inlet flow, and the time constant R·C of
+    # the territory bed (≈0.2 s in health). Neither changes the mean (steady) results.
+    pulsatility_index: float = 0.9
+    territory_tau_s: float = 0.2
 
     def __post_init__(self) -> None:
         if self.bc not in ("fixed_flow", "territory"):
@@ -151,3 +155,5 @@ class FlowConditions:
             raise ValueError("inlet_drop_mmhg must be >= 0 and leave the inlet above the outflow pressure")
         if not 0.0 <= self.collateral_pct < 100.0 or not 0.0 <= self.no_reflow_pct < 100.0:
             raise ValueError("collateral_pct and no_reflow_pct must be in [0, 100)")
+        if not 0.0 <= self.pulsatility_index <= 2.0 or self.territory_tau_s <= 0 or self.heart_rate_bpm <= 0:
+            raise ValueError("need 0 <= pulsatility_index <= 2, territory_tau_s > 0 and heart_rate_bpm > 0")

@@ -60,6 +60,9 @@ export const DEFAULTS = Object.freeze({
   // downstream tissue (territory BC only; mirrors FlowConditions.collateral_pct / no_reflow_pct)
   collateralPct: 0,   // territory flow collaterals would supply with the vessel fully occluded, % of healthy
   noReflowPct: 0,     // % of the distal microvascular bed obstructed (no-reflow)
+  // pulsatility (bvm/pulsatile.py): healthy inlet Gosling PI and the territory bed's time constant R·C
+  pulsatilityIndex: 0.9,
+  tauS: 0.2,
 });
 
 // Carreau blood (Cho & Kensey 1991) as a factor on the high-shear viscosity; mirrors bvm.hemodynamics
@@ -138,6 +141,7 @@ export function validate(p) {
   if (!(p.hct > 0 && p.hct < 80)) errs.push("Hematocrit must be between 0 and 80%.");
   if (!((p.collateralPct ?? 0) >= 0 && (p.collateralPct ?? 0) < 100)) errs.push("Collateral supply must be in [0, 100)%.");
   if (!((p.noReflowPct ?? 0) >= 0 && (p.noReflowPct ?? 0) < 100)) errs.push("No-reflow must be in [0, 100)%.");
+  if (!((p.pulsatilityIndex ?? 0.9) >= 0 && (p.pulsatilityIndex ?? 0.9) <= 2) || !((p.tauS ?? 0.2) > 0)) errs.push("Pulsatility index must be in [0, 2] and τ > 0.");
   if (p.inletDropMmHg < 0 || p.inletMmHg - p.inletDropMmHg <= p.outflowMmHg)
     errs.push("The upstream pressure drop leaves no driving pressure.");
   return errs;
@@ -340,9 +344,9 @@ export function solve(p, n = 401) {
   const pOut = p.outflowMmHg * MMHG, nb = geom.branchIdx.length;
   const { muEff, distalScale } = bloodFactors(p), pEff = { ...p, mu: muEff };
   const refBq = new Float64Array(nb).fill(nb ? (q0 * p.branchFlowPct) / 100 / nb : 0);
-  let branchR = new Float64Array(0), rDistal = null, ref = null, rColl = Infinity, pColl = 0;
+  let branchR = new Float64Array(0), rDistal = null, ref = null, rColl = Infinity, pColl = 0, refP = null, refGeom = null;
   if (p.bc !== "fixed_flow" || nb) {
-    const refP = referenceParams(p), refGeom = buildGeometry(refP, n);
+    refP = referenceParams(p); refGeom = buildGeometry(refP, n);
     ref = solveAtFlow(refGeom, refP, q0, pCal, { branchQ: refBq });
     branchR = Float64Array.from(refGeom.branchIdx, (idx, k) => ((ref.pressure[idx] - pOut) / refBq[k]) * distalScale);
     if (branchR.some((R) => !(R > 0)) || ref.pressure[n - 1] - pOut <= 0)
@@ -373,7 +377,102 @@ export function solve(p, n = 401) {
   const result = { params: { ...p }, geom, ...sol, referenceQ, referenceQOut: ref?.qOut ?? null, referenceBranchQ: refBq,
     muEff, distalScale, wssRef, qColl };
   result.summary = summarize(result);
+  result.summary.pulse = pulsatile({ p, pEff, geom, sol, qColl, q0, pIn, pCal, pOut, branchR, refBq, refP, refGeom, ref, rDistal, rColl });
   return result;
+}
+
+// ---------- pulsatility: small-signal harmonics about the mean state (mirrors bvm/pulsatile.py) ----------
+const PULSE_N = 256, PULSE_OUT = 64, WAVE_AMPS = [1, 0.5, 0.25, 0.125], WAVE_PEAK = 0.15;
+const cx = (re, im = 0) => ({ re, im });
+const cadd = (a, b) => cx(a.re + b.re, a.im + b.im);
+const cmul = (a, b) => cx(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re);
+const cdiv = (a, b) => { const d = b.re * b.re + b.im * b.im; return cx((a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d); };
+const cinv = (a) => cdiv(cx(1), a);
+const cscale = (a, k) => cx(a.re * k, a.im * k);
+
+/** Complex harmonics c_k of the idealized inlet waveform w(t) = 1 + Re Σ c_k e^{jkωt}, scaled to a Gosling PI. */
+export function waveformCoefficients(pi) {
+  let gMax = -Infinity, gMin = Infinity;
+  for (let i = 0; i < PULSE_N; i++) {
+    let g = 0;
+    WAVE_AMPS.forEach((a, k) => { g += a * Math.cos(2 * Math.PI * (k + 1) * (i / PULSE_N - WAVE_PEAK)); });
+    gMax = Math.max(gMax, g); gMin = Math.min(gMin, g);
+  }
+  const sc = pi / (gMax - gMin);
+  return WAVE_AMPS.map((a, k) => { const ph = -2 * Math.PI * (k + 1) * WAVE_PEAK; return cx(sc * a * Math.cos(ph), sc * a * Math.sin(ph)); });
+}
+export function synth(mean, coef, n) {
+  const out = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let v = mean;
+    coef.forEach((c, k) => { const th = 2 * Math.PI * (k + 1) * (i / n); v += c.re * Math.cos(th) - c.im * Math.sin(th); });
+    out[i] = v;
+  }
+  return out;
+}
+function incrementalResistance(geom, p, q, pIn, branchQ) {
+  const e = 1e-3 * q, n = geom.s.length;
+  const lo = solveAtFlow(geom, p, q - e, pIn, { branchQ }).pressure[n - 1], hi = solveAtFlow(geom, p, q + e, pIn, { branchQ }).pressure[n - 1];
+  return (lo - hi) / (2 * e);
+}
+function inertance(geom, radius, rho) {
+  let L = 0;
+  for (let i = 1; i < geom.s.length; i++) L += 0.5 * (1 / (Math.PI * radius[i] ** 2) + 1 / (Math.PI * radius[i - 1] ** 2)) * (geom.s[i] - geom.s[i - 1]);
+  return rho * L;
+}
+function argmaxF(a) { let k = 0; for (let i = 1; i < a.length; i++) if (a[i] > a[k]) k = i; return k; }
+function argminF(a) { let k = 0; for (let i = 1; i < a.length; i++) if (a[i] < a[k]) k = i; return k; }
+
+function pulsatile(c) {
+  const { p, sol } = c, toMl = 1 / MLMIN, omega = (2 * Math.PI * p.heartRate) / 60;
+  const coef = waveformCoefficients(p.pulsatilityIndex ?? 0.9), qBar = sol.q;
+  const out = { heart_rate_bpm: p.heartRate, PI_reference: p.pulsatilityIndex ?? 0.9 };
+  let qk, pk = null, qi, pi, waveT = null;
+  if (p.bc !== "fixed_flow") {
+    const n = c.geom.s.length, rD = c.rDistal, rDh = (c.ref.pressure[n - 1] - c.pOut) / c.ref.qOut, cap = (p.tauS ?? 0.2) / rDh;
+    const rv = incrementalResistance(c.geom, c.pEff, qBar, c.pIn, sol.branchQ);
+    const rvh = incrementalResistance(c.refGeom, c.refP, c.q0, c.pCal, c.refBq);
+    const lv = inertance(c.geom, sol.radius, c.pEff.rho), lh = inertance(c.refGeom, c.ref.radius, c.refP.rho);
+    const gc = c.qColl > 0 ? 1 / c.rColl : 0;
+    qk = []; pk = []; const qtk = [];
+    coef.forEach((ck, k) => {
+      const w = (k + 1) * omega;
+      const zinH = cadd(cx(rvh, w * lh), cinv(cx(1 / rDh, w * cap)));
+      const pp = cmul(cscale(ck, c.q0), zinH);
+      const y = cx(1 / rD + gc, w * cap);
+      const q = cdiv(pp, cadd(cx(rv, w * lv), cinv(y)));
+      pk.push(pp); qk.push(q); qtk.push(cscale(cdiv(q, y), 1 / rD));
+    });
+    const qTerr = sol.qOut + c.qColl;
+    qi = synth(qBar, qk, PULSE_N); const qt = synth(qTerr, qtk, PULSE_N); pi = synth(c.pIn, pk, PULSE_N);
+    const qtMax = max(qt), qtMin = min(qt), piMax = max(pi), piMin = min(pi);
+    Object.assign(out, {
+      tau_s: p.tauS ?? 0.2, incremental_resistance_ratio: rv / rvh,
+      Q_territory_systolic_mL_min: qtMax * toMl, Q_territory_diastolic_mL_min: qtMin * toMl,
+      PI_territory: qTerr > 0 ? (qtMax - qtMin) / qTerr : NaN,
+      inlet_pulse_pressure_mmHg: (piMax - piMin) / MMHG,
+    });
+    waveT = Array.from(synth(qTerr, qtk, PULSE_OUT), (v) => v * toMl);
+  } else {
+    qk = coef.map((ck) => cscale(ck, qBar));
+    qi = synth(qBar, qk, PULSE_N); pi = new Float64Array(PULSE_N).fill(c.pIn);
+  }
+  const qMax = max(qi), qMin = min(qi);
+  Object.assign(out, {
+    Q_inlet_systolic_mL_min: qMax * toMl, Q_inlet_diastolic_mL_min: qMin * toMl,
+    PI_inlet: (qMax - qMin) / qBar, flow_reversal: qMin <= 0,
+    waveform_t: Array.from({ length: PULSE_OUT }, (_, i) => i / PULSE_OUT),
+    waveform_Q_inlet_mL_min: Array.from(synth(qBar, qk, PULSE_OUT), (v) => v * toMl),
+    waveform_Q_territory_mL_min: waveT,
+  });
+  for (const [tag, i] of [["systolic", argmaxF(qi)], ["diastolic", argminF(qi)]]) {
+    if (qi[i] <= 0) continue;
+    const s = solveAtFlow(c.geom, c.pEff, qi[i], pi[i], { branchR: c.branchR, pOut: c.pOut });
+    out[`wss_max_${tag}_Pa`] = max(s.wss); out[`wss_min_${tag}_Pa`] = min(s.wss);
+    out[`Re_max_${tag}`] = max(s.reynolds);
+    out[`dP_vessel_${tag}_mmHg`] = (s.pressure[0] - s.pressure[s.pressure.length - 1]) / MMHG;
+  }
+  return out;
 }
 
 function ischemiaBand(frac) {
