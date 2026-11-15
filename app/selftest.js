@@ -1,7 +1,7 @@
 // Browser self-test for the JS engine and device logic (verification evidence; see
 // docs/credibility-assessment-plan.md). Open app/selftest.html locally or on the live site.
-import * as M from "./model.js?v=202611151625";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, defaultOptions, treat } from "./devices.js?v=202611151625";
+import * as M from "./model.js?v=202611151646";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, defaultOptions, treat } from "./devices.js?v=202611151646";
 
 export function runSelfTest() {
   const results = [];
@@ -46,6 +46,32 @@ export function runSelfTest() {
     const oef = (hct) => M.solve({ ...M.DEFAULTS, hct, occlusionPct: 70 }, 161).summary.o2_distal.required_OEF;
     chk(oef(25) > oef(35) && oef(35) > oef(45), "anemia should raise required extraction behind a stenosis");
     chk(M.solve({ ...M.DEFAULTS, occlusionPct: 95 }, 161).summary.o2_distal.band === "unmet", "95% occlusion should leave demand unmet");
+  }
+
+  // ── collaterals, no-reflow, shear-thinning blood (mirrors tests/test_collaterals_rheology.py) ──
+  const tis = group("Engine: collaterals, no-reflow and non-Newtonian blood");
+  {
+    const chk = (ok, msg) => { tis.cases++; if (!ok) tis.fails.push(msg); };
+    const S = (p) => M.solve({ ...M.DEFAULTS, ...p }, 161).summary;
+    const h = S({ collateralPct: 40 });
+    chk(h.Q_collateral_mL_min < 1e-6 && near(h.flow_fraction, 1, 1e-9), "collaterals must carry no flow in health");
+    const occ = S({ occlusionPct: 99.5, stenosisLengthMm: 10, rigid: true, nBranches: 0, collateralPct: 30 });
+    chk(Math.abs(occ.flow_fraction - 0.3) < 0.01, `collateral share at near-occlusion ${occ.flow_fraction}`);
+    const g = [50, 80, 95].map((o) => S({ occlusionPct: o, collateralPct: 30 }).flow_fraction - S({ occlusionPct: o }).flow_fraction);
+    chk(g[0] >= 0 && g[0] < g[1] && g[1] < g[2], "collateral gain should grow with stenosis");
+    const t = S({ occlusionPct: 90, collateralPct: 25, noReflowPct: 30 });
+    chk(near(t.Q_territory_mL_min, t.Q_distal_mL_min + t.Q_collateral_mL_min, 1e-12) && t.Q_collateral_mL_min > 0, "territory flow balance");
+    const nr = S({ noReflowPct: 40 }).flow_fraction;
+    chk(nr > 0.6 && nr < 0.62, `no-reflow 40% gives ${nr}`);
+    chk(Math.abs(M.carreauFactor(0) - M.CARREAU.muRatio) < 1e-12 && M.carreauFactor(1e7) < 1.001, "Carreau limits");
+    const n0 = M.solve({ ...M.DEFAULTS, nBranches: 0, bc: "fixed_flow" }, 161), n1 = M.solve({ ...M.DEFAULTS, nBranches: 0, bc: "fixed_flow", nonNewtonian: true }, 161);
+    chk(Math.abs(n1.wss[0] / n0.wss[0] - M.carreauFactor((4 * n0.q) / (Math.PI * n0.radius[0] ** 3))) < 1e-3, "non-Newtonian WSS ratio");
+    chk(near(S({ nonNewtonian: true }).flow_fraction, 1, 1e-9), "non-Newtonian healthy territory must calibrate to 100%");
+    for (const o of [0, 70, 95]) for (const c of [0, 30]) for (const r of [0, 50]) {
+      tis.cases++;
+      try { S({ occlusionPct: o, collateralPct: c, noReflowPct: r, nonNewtonian: true, hct: 35 }); }
+      catch (e) { tis.fails.push(`${o}% coll ${c} no-reflow ${r}: ${e.message}`); }
+    }
   }
 
   // ── engine: robustness across a parameter grid (both grids the app uses) ──

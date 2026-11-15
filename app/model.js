@@ -56,7 +56,15 @@ export const DEFAULTS = Object.freeze({
   cmro2: 3.3,         // mL O2/100 g/min
   cbfNormal: 50,      // mL/100 g/min at the healthy reference flow
   oefMax: 0.8,        // maximum O2 extraction fraction
+  nonNewtonian: false, // shear-thinning blood in the vessel (Carreau, Cho & Kensey 1991)
+  // downstream tissue (territory BC only; mirrors FlowConditions.collateral_pct / no_reflow_pct)
+  collateralPct: 0,   // territory flow collaterals would supply with the vessel fully occluded, % of healthy
+  noReflowPct: 0,     // % of the distal microvascular bed obstructed (no-reflow)
 });
+
+// Carreau blood (Cho & Kensey 1991) as a factor on the high-shear viscosity; mirrors bvm.hemodynamics
+export const CARREAU = Object.freeze({ muRatio: 0.056 / 0.00345, lambda: 3.313, n: 0.3568 });
+export const carreauFactor = (rate) => 1 + (CARREAU.muRatio - 1) * (1 + (CARREAU.lambda * rate) ** 2) ** ((CARREAU.n - 1) / 2);
 
 export const HCT_REF = 45;
 
@@ -128,6 +136,8 @@ export function validate(p) {
     errs.push("Branches need 0 < start ≤ end < 1.");
   if (!(p.branchFlowPct >= 0 && p.branchFlowPct < 100)) errs.push("Branch flow share must be in [0, 100)%.");
   if (!(p.hct > 0 && p.hct < 80)) errs.push("Hematocrit must be between 0 and 80%.");
+  if (!((p.collateralPct ?? 0) >= 0 && (p.collateralPct ?? 0) < 100)) errs.push("Collateral supply must be in [0, 100)%.");
+  if (!((p.noReflowPct ?? 0) >= 0 && (p.noReflowPct ?? 0) < 100)) errs.push("No-reflow must be in [0, 100)%.");
   if (p.inletDropMmHg < 0 || p.inletMmHg - p.inletDropMmHg <= p.outflowMmHg)
     errs.push("The upstream pressure drop leaves no driving pressure.");
   return errs;
@@ -276,12 +286,14 @@ export function solveAtFlow(geom, p, q, pIn, opts = {}) {
 
   let r = Float64Array.from(r0);
   const vel = new Float64Array(n), re = new Float64Array(n), dean = new Float64Array(n), fc = new Float64Array(n), qn = new Float64Array(n);
-  const pr = new Float64Array(n), strain = new Float64Array(n), rNew = new Float64Array(n), bq = new Float64Array(nb);
+  const pr = new Float64Array(n), strain = new Float64Array(n), rNew = new Float64Array(n), bq = new Float64Array(nb), muN = new Float64Array(n);
+  const nonNewt = !!p.nonNewtonian;
   // under-relaxation ω = 0.5, halved (to 1/64) if the update stalls; mirrors bvm.hemodynamics
   let converged = false, qq = q, omega = 0.5, best = Infinity, stall = 0;
   const node = (i, qf) => {
-    const v = qf / (Math.PI * r[i] * r[i]), rei = (rho * v * 2 * r[i]) / mu, de = rei * Math.sqrt(r[i] * kappa[i]), f = whiteCurvatureFactor(de);
-    return [v, rei, de, f, ((8 * mu * qf) / (Math.PI * r[i] ** 4)) * f];
+    const m = nonNewt ? mu * carreauFactor((4 * qf) / (Math.PI * r[i] ** 3)) : mu;
+    const v = qf / (Math.PI * r[i] * r[i]), rei = (rho * v * 2 * r[i]) / m, de = rei * Math.sqrt(r[i] * kappa[i]), f = whiteCurvatureFactor(de);
+    return [v, rei, de, f, ((8 * m * qf) / (Math.PI * r[i] ** 4)) * f, m];
   };
   for (let it = 0; it < 4000; it++) {
     const a0 = Math.PI * r[0] ** 2 * baseRatio;
@@ -294,7 +306,7 @@ export function solveAtFlow(geom, p, q, pIn, opts = {}) {
         bq[k] = branchQ ? branchQ[k] : Math.max(0, (pr[i] - pOut) / branchR[k]);
         qq -= bq[k];
       }
-      [vel[i], re[i], dean[i], fc[i], gPrev] = node(i, qq);
+      [vel[i], re[i], dean[i], fc[i], gPrev, muN[i]] = node(i, qq);
       qn[i] = qq;
       if (occ && i === iT) loss = YOUNG_TSAI_KT * (rho / 2) * (qq / a0) ** 2 * (a0 / (Math.PI * r[iT] ** 2) - 1) ** 2;
     }
@@ -311,8 +323,8 @@ export function solveAtFlow(geom, p, q, pIn, opts = {}) {
   }
   if (!converged) throw new Error("Wall–pressure coupling did not converge: the wall is very soft or the lumen is collapsing.");
   const wss = new Float64Array(n);
-  for (let i = 0; i < n; i++) wss[i] = ((4 * mu * qn[i]) / (Math.PI * r[i] ** 3)) * fc[i];
-  return { q, qOut: qq, branchQ: bq, qNode: qn, radius: r, pressure: pr, velocity: vel, reynolds: re, dean, wss, strain };
+  for (let i = 0; i < n; i++) wss[i] = ((4 * muN[i] * qn[i]) / (Math.PI * r[i] ** 3)) * fc[i];
+  return { q, qOut: qq, branchQ: bq, qNode: qn, radius: r, pressure: pr, velocity: vel, reynolds: re, dean, wss, strain, muNode: muN };
 }
 
 export function referenceParams(p) {
@@ -328,30 +340,38 @@ export function solve(p, n = 401) {
   const pOut = p.outflowMmHg * MMHG, nb = geom.branchIdx.length;
   const { muEff, distalScale } = bloodFactors(p), pEff = { ...p, mu: muEff };
   const refBq = new Float64Array(nb).fill(nb ? (q0 * p.branchFlowPct) / 100 / nb : 0);
-  let branchR = new Float64Array(0), rDistal = null, ref = null;
+  let branchR = new Float64Array(0), rDistal = null, ref = null, rColl = Infinity, pColl = 0;
   if (p.bc !== "fixed_flow" || nb) {
     const refP = referenceParams(p), refGeom = buildGeometry(refP, n);
     ref = solveAtFlow(refGeom, refP, q0, pCal, { branchQ: refBq });
     branchR = Float64Array.from(refGeom.branchIdx, (idx, k) => ((ref.pressure[idx] - pOut) / refBq[k]) * distalScale);
     if (branchR.some((R) => !(R > 0)) || ref.pressure[n - 1] - pOut <= 0)
       throw new Error("The reference vessel alone drops more pressure than is available.");
-    rDistal = ((ref.pressure[n - 1] - pOut) / ref.qOut) * distalScale;
+    const rBed = ((ref.pressure[n - 1] - pOut) / ref.qOut) * distalScale;   // healthy, unobstructed bed
+    rDistal = rBed / (1 - (p.noReflowPct ?? 0) / 100);
+    // collaterals (mirrors bvm.hemodynamics.solve): alone they would carry collateralPct of the healthy
+    // territory flow at full occlusion; supply at the healthy outlet pressure, so no flow in health
+    const c = (p.collateralPct ?? 0) / 100;
+    if (c > 0) rColl = rBed * (1 / c - 1);
+    pColl = ref.pressure[n - 1] - (p.inletDropMmHg ?? 0) * MMHG;
   }
-  let sol, referenceQ = null;
+  let sol, referenceQ = null, qColl = 0;
+  const collateral = (pEnd) => Math.max(0, (pColl - pEnd) / rColl);
   const opts = { branchR, pOut };
   if (p.bc === "fixed_flow") {
     sol = solveAtFlow(geom, pEff, q0, pIn, opts);
   } else {
     let qMax = (pIn - pOut) / rDistal;
     for (const R of branchR) qMax += (pIn - pOut) / R;
-    const q = bisect((qq) => { const t = solveAtFlow(geom, pEff, qq, pIn, opts); return t.pressure[n - 1] - pOut - rDistal * t.qOut; },
+    const q = bisect((qq) => { const t = solveAtFlow(geom, pEff, qq, pIn, opts); return t.pressure[n - 1] - pOut - rDistal * (t.qOut + collateral(t.pressure[n - 1])); },
       qMax * 1e-6, qMax, qMax * 1e-12);
     sol = solveAtFlow(geom, pEff, q, pIn, opts);
     referenceQ = q0;
+    qColl = collateral(sol.pressure[n - 1]);
   }
   const wssRef = (4 * p.mu * q0) / (Math.PI * ((p.diameterMm / 2) * 1e-3) ** 3);
   const result = { params: { ...p }, geom, ...sol, referenceQ, referenceQOut: ref?.qOut ?? null, referenceBranchQ: refBq,
-    muEff, distalScale, wssRef };
+    muEff, distalScale, wssRef, qColl };
   result.summary = summarize(result);
   return result;
 }
@@ -366,7 +386,7 @@ function ischemiaBand(frac) {
 /** Lévêque scaling of wall O2 mass transfer with wall shear rate, relative to the healthy inlet. */
 export function wallO2Index(res) {
   const mu = res.muEff ?? res.params.mu, ref = res.wssRef / res.params.mu;
-  return Array.from(res.wss, (w) => Math.cbrt(w / mu / ref));
+  return Array.from(res.wss, (w, i) => Math.cbrt(w / (res.muNode?.[i] ?? mu) / ref));
 }
 
 /** Linear interpolation of y(x) at x0 (x ascending), clamped like numpy.interp. */
@@ -420,6 +440,8 @@ export function summarize(res) {
     warnings,
   };
   out.Q_distal_mL_min = res.qOut / MLMIN;
+  out.Q_collateral_mL_min = (res.qColl ?? 0) / MLMIN;
+  out.Q_territory_mL_min = (res.qOut + (res.qColl ?? 0)) / MLMIN;
   out.Q_branches_mL_min = res.branchQ.reduce((a, b) => a + b, 0) / MLMIN;
   out.branch_mL_min = Array.from(res.branchQ, (b) => b / MLMIN);
   if (p.occlusionPct > 0) {
@@ -431,12 +453,13 @@ export function summarize(res) {
   // blood + oxygen (mirrors VesselSolution.summary()["blood"/"oxygen"])
   out.mu_effective = res.muEff ?? p.mu;
   out.distal_resistance_scale = res.distalScale ?? 1;
+  out.mu_apparent_max = res.muNode ? max(res.muNode) : out.mu_effective;
   out.hemoglobin = hemoglobin(p);
   out.CaO2 = oxygenContent(p);
   const toMl = 1 / MLMIN, refB = res.referenceBranchQ?.reduce((a, b) => a + b, 0) ?? 0;
   out.o2_inlet = territoryOxygen(res.q * toMl, null, p);
   // tissue terms (CBF, required OEF) only exist with a territory: in fixed-flow mode the flow is prescribed
-  out.o2_distal = territoryOxygen(res.qOut * toMl, res.referenceQ != null ? res.referenceQOut * toMl : null, p);
+  out.o2_distal = territoryOxygen(out.Q_territory_mL_min, res.referenceQ != null ? res.referenceQOut * toMl : null, p);
   if (res.branchQ.length) out.o2_perforators = territoryOxygen(res.branchQ.reduce((a, b) => a + b, 0) * toMl, refB > 0 && res.referenceQ != null ? refB * toMl : null, p);
   if (res.wssRef) {
     const idx = wallO2Index(res);
@@ -445,7 +468,7 @@ export function summarize(res) {
   }
   if (res.referenceQ != null) {
     // distal (outlet) flow vs the healthy reference: the primary perfusion endpoint
-    out.flow_fraction = res.qOut / res.referenceQOut;
+    out.flow_fraction = (res.qOut + (res.qColl ?? 0)) / res.referenceQOut;
     out.ischemia_band = ischemiaBand(out.flow_fraction);
     out.reference_distal_mL_min = res.referenceQOut / MLMIN;
     const refB = res.referenceBranchQ.reduce((a, b) => a + b, 0);

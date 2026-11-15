@@ -21,6 +21,9 @@ class Blood:
     hematocrit: float = 45.0               # %, sets O₂ content and (if coupled) viscosity
     viscosity_from_hematocrit: bool = True  # scale μ and the microvascular bed by Pries et al. 1994
     micro_diameter_um: float = 25.0         # effective diameter of the resistance vessels downstream (assumed)
+    # Shear-thinning blood in the modeled vessel: Carreau law (Cho & Kensey 1991) scaled so its
+    # high-shear limit equals mu (after any hematocrit coupling). See hemodynamics.carreau_factor.
+    non_newtonian: bool = False
 
     @property
     def nu(self) -> float:
@@ -127,6 +130,13 @@ class FlowConditions:
     inlet_drop_mmhg: float = 0.0
     # Share of the healthy inlet flow taken by all side branches together (Vessel.n_branches).
     branch_flow_pct: float = 1.9
+    # Territory BC only. Leptomeningeal collaterals: territory flow they would supply with the vessel
+    # fully occluded, as % of the healthy territory flow (0 = none, the worst case). They feed the
+    # territory node from a pial supply at the healthy outlet pressure, so they carry no flow in health.
+    collateral_pct: float = 0.0
+    # Territory BC only. No-reflow (microvascular obstruction): % of the distal microvascular bed
+    # obstructed; the distal resistance is divided by (1 - fraction). Perforator beds are not affected.
+    no_reflow_pct: float = 0.0
 
     def __post_init__(self) -> None:
         if self.bc not in ("fixed_flow", "territory"):
@@ -139,3 +149,5 @@ class FlowConditions:
             raise ValueError("branch_flow_pct must be in [0, 100)")
         if self.inlet_drop_mmhg < 0 or self.inlet_pressure_mmhg - self.inlet_drop_mmhg <= self.outflow_pressure_mmhg:
             raise ValueError("inlet_drop_mmhg must be >= 0 and leave the inlet above the outflow pressure")
+        if not 0.0 <= self.collateral_pct < 100.0 or not 0.0 <= self.no_reflow_pct < 100.0:
+            raise ValueError("collateral_pct and no_reflow_pct must be in [0, 100)")

@@ -35,6 +35,22 @@ YOUNG_TSAI_KT = 1.52        # expansion-loss coefficient (Young & Tsai, 1973)
 LOW_WSS_PA = 0.4            # below this: atheroprone / low-shear (Malek et al., 1999)
 HIGH_WSS_PA = 10.0          # rough onset of platelet-activating shear in stenoses (screening flag)
 SMALL_STRAIN_LIMIT = 0.10   # linear thin-wall law is not trustworthy beyond ~10% strain
+# Carreau model of whole blood (Cho & Kensey, Biorheology 1991): mu0 = 0.056, mu_inf = 0.00345 Pa·s,
+# lambda = 3.313 s, n = 0.3568. Used as a factor on the high-shear viscosity.
+CARREAU_MU_RATIO = 0.056 / 0.00345
+CARREAU_LAMBDA_S = 3.313
+CARREAU_N = 0.3568
+
+
+def carreau_factor(shear_rate):
+    """Apparent / high-shear viscosity of blood at a shear rate (1/s), Carreau (Cho & Kensey 1991).
+
+    In the 1D model it is evaluated at the Newtonian wall shear rate 4Q/(πr³) of each station, a
+    standard reduced-order approximation (exact for the Newtonian limit; it underestimates the true
+    wall shear rate of a shear-thinning fluid by the Rabinowitsch factor (3n'+1)/4n', ~5% at
+    arterial shear rates). ≈1.07 at a healthy M1 (≈1300 1/s), larger where flow is slow.
+    """
+    return 1.0 + (CARREAU_MU_RATIO - 1.0) * (1.0 + (CARREAU_LAMBDA_S * np.asarray(shear_rate)) ** 2) ** ((CARREAU_N - 1.0) / 2.0)
 
 
 def flow_regime(re: float) -> str:
@@ -75,6 +91,8 @@ class VesselSolution:
     reference_branch_q: np.ndarray | None = None
     oxygen: Oxygen = field(default_factory=Oxygen)
     mu_effective: float | None = None   # viscosity actually used (after hematocrit coupling)
+    mu_apparent: np.ndarray | None = None   # per-station viscosity (differs from mu_effective if non-Newtonian)
+    q_collateral: float = 0.0           # m³/s entering the territory through collaterals (territory BC)
     distal_scale: float = 1.0           # microvascular resistance factor from hematocrit
     wss_reference: float | None = None  # healthy inlet WSS at the reference flow (for the wall O₂ index)
     warnings: list[str] = field(default_factory=list)
@@ -108,6 +126,8 @@ class VesselSolution:
             "flow": {
                 "Q_mL_min": self.q / ML_MIN_TO_M3_S,
                 "Q_distal_mL_min": self.q_out / ML_MIN_TO_M3_S,
+                "Q_collateral_mL_min": self.q_collateral / ML_MIN_TO_M3_S,
+                "Q_territory_mL_min": (self.q_out + self.q_collateral) / ML_MIN_TO_M3_S,
                 "Q_branches_mL_min": float(self.branch_q.sum()) / ML_MIN_TO_M3_S,
                 "mean_velocity_inlet_m_s": float(self.velocity[0]),
                 "mean_velocity_throat_m_s": float(self.velocity[i_t]),
@@ -157,15 +177,18 @@ class VesselSolution:
         }
         mu_eff = self.mu_effective or b.mu
         out["blood"] = {"hematocrit_pct": b.hematocrit, "mu_effective_Pa_s": mu_eff, "distal_resistance_scale": self.distal_scale,
-                        "hemoglobin_g_dL": self.oxygen.hemoglobin(b.hematocrit), "CaO2_mL_dL": self.oxygen.content(b.hematocrit)}
+                        "hemoglobin_g_dL": self.oxygen.hemoglobin(b.hematocrit), "CaO2_mL_dL": self.oxygen.content(b.hematocrit),
+                        "non_newtonian": b.non_newtonian,
+                        "mu_apparent_max_Pa_s": float(np.max(self.mu_apparent)) if self.mu_apparent is not None else mu_eff}
+        q_terr = self.q_out + self.q_collateral
         to_ml = 1 / ML_MIN_TO_M3_S
         ox = {"inlet": territory_oxygen(self.q * to_ml, None, b.hematocrit, self.oxygen)}
-        ox["distal"] = territory_oxygen(self.q_out * to_ml, self.reference_q_out and self.reference_q_out * to_ml, b.hematocrit, self.oxygen)
+        ox["distal"] = territory_oxygen(q_terr * to_ml, self.reference_q_out and self.reference_q_out * to_ml, b.hematocrit, self.oxygen)
         if len(self.branch_q):
             ref_b = None if self.reference_branch_q is None or self.reference_branch_q.sum() == 0 else self.reference_branch_q.sum() * to_ml
             ox["perforators"] = territory_oxygen(float(self.branch_q.sum()) * to_ml, ref_b, b.hematocrit, self.oxygen)
         if self.wss_reference:
-            idx = wall_o2_index(self.wss, mu_eff, self.wss_reference, b.mu)
+            idx = wall_o2_index(self.wss, self.mu_apparent if self.mu_apparent is not None else mu_eff, self.wss_reference, b.mu)
             ox["wall_o2_index_min"] = float(idx.min())
             ox["wall_o2_index_below_0_8_fraction"] = float(np.mean(idx < 0.8))
         out["oxygen"] = ox
@@ -177,7 +200,7 @@ class VesselSolution:
             out["stenosis"]["Pd_over_Pa_lesion"] = pb / pa
         if self.reference_q is not None:
             # distal (outlet) flow vs the healthy reference: the primary perfusion endpoint
-            frac = self.q_out / self.reference_q_out
+            frac = q_terr / self.reference_q_out
             out["perfusion"] = {
                 "reference_Q_mL_min": self.reference_q / ML_MIN_TO_M3_S,
                 "reference_Q_distal_mL_min": self.reference_q_out / ML_MIN_TO_M3_S,
@@ -235,7 +258,7 @@ def _solve_at_flow(geom: VesselGeometry, blood: Blood, fl: FlowConditions, q: fl
     omega, best, stall = 0.5, math.inf, 0
     for _ in range(4000):
         area0 = np.pi * r[0] ** 2 * base_ratio
-        p = np.empty(n); qn = np.empty(n); vel = np.empty(n); re = np.empty(n); dean = np.empty(n); fc = np.empty(n)
+        p = np.empty(n); qn = np.empty(n); vel = np.empty(n); re = np.empty(n); dean = np.empty(n); fc = np.empty(n); mun = np.empty(n)
         bq = np.zeros(len(b_idx))
         qq, cum, loss = q, 0.0, 0.0
         for a, b in zip(starts, ends):
@@ -246,10 +269,11 @@ def _solve_at_flow(geom: VesselGeometry, blood: Blood, fl: FlowConditions, q: fl
             sl = slice(a, b + 1)
             rr = r[sl]
             v_ = qq / (np.pi * rr**2)
-            re_ = rho * v_ * 2 * rr / mu
+            mu_ = mu * carreau_factor(4 * qq / (np.pi * rr**3)) if blood.non_newtonian else np.full(len(rr), mu)
+            re_ = rho * v_ * 2 * rr / mu_
             de_ = re_ * np.sqrt(rr * kappa[sl])
             fc_ = white_curvature_factor(de_)
-            g = 8 * mu * qq / (np.pi * rr**4) * fc_
+            g = 8 * mu_ * qq / (np.pi * rr**4) * fc_
             if v.occlusion_pct > 0 and a <= i_t < b + (b == n - 1):
                 # Young–Tsai expansion loss with the flow through the throat, spread over the
                 # diverging half of the stenosis; upstream area = healthy local area at the throat.
@@ -259,7 +283,7 @@ def _solve_at_flow(geom: VesselGeometry, blood: Blood, fl: FlowConditions, q: fl
             cum = cumdp[-1]
             m = slice(a, b + 1) if b == n - 1 else slice(a, b)
             k = b + 1 - a if b == n - 1 else b - a
-            qn[m], vel[m], re[m], dean[m], fc[m] = qq, v_[:k], re_[:k], de_[:k], fc_[:k]
+            qn[m], vel[m], re[m], dean[m], fc[m], mun[m] = qq, v_[:k], re_[:k], de_[:k], fc_[:k], mu_[:k]
         strain = np.zeros_like(r) if v.is_rigid else (p - p_ext) * r0 / eh
         if v.rigid_span_mm is not None:
             a_, b_ = v.rigid_span_mm
@@ -278,7 +302,7 @@ def _solve_at_flow(geom: VesselGeometry, blood: Blood, fl: FlowConditions, q: fl
     else:
         raise RuntimeError("wall-pressure coupling did not converge (very soft wall or a collapsing lumen?)")
 
-    wss = 4 * mu * qn / (np.pi * r**3) * fc
+    wss = 4 * mun * qn / (np.pi * r**3) * fc
     warnings = []
     if strain.max() > SMALL_STRAIN_LIMIT:
         warnings.append(
@@ -296,7 +320,7 @@ def _solve_at_flow(geom: VesselGeometry, blood: Blood, fl: FlowConditions, q: fl
     if re.max() >= RE_LAMINAR_MAX:
         warnings.append("Re exceeds the laminar limit somewhere; the laminar loss model is not valid there.")
     sol = VesselSolution(v, blood, fl, geom, q, r, p, vel, re, dean, wss, strain, warnings=warnings)
-    sol.q_out, sol.branch_q = float(qq), bq
+    sol.q_out, sol.branch_q, sol.mu_apparent = float(qq), bq, mun
     return sol
 
 
@@ -346,19 +370,29 @@ def solve(vessel: Vessel, blood: Blood | None = None, flow: FlowConditions | Non
             raise ValueError("reference vessel alone drops more pressure than is available; check pressures")
         with np.errstate(divide="ignore"):  # a branch given zero flow has infinite resistance
             branch_r = (p_branch - p_out) / ref_bq * dscale if nb else np.zeros(0)
-        r_distal = (ref.pressure[-1] - p_out) / ref.q_out * dscale
+        r_distal = (ref.pressure[-1] - p_out) / ref.q_out * dscale / (1.0 - flow.no_reflow_pct / 100.0)
+        # collaterals: with the vessel fully occluded they alone would carry collateral_pct of the healthy
+        # territory flow through the unobstructed bed: R_c = R_d·(1/c − 1). Their supply pressure is the
+        # healthy outlet pressure (minus any systemic drop), so they carry no flow in the reference.
+        c = flow.collateral_pct / 100.0
+        r_coll = (ref.pressure[-1] - p_out) / ref.q_out * dscale * (1.0 / c - 1.0) if c > 0 else math.inf
+        p_coll = ref.pressure[-1] - flow.inlet_drop_mmhg * MMHG_TO_PA
     else:
         branch_r = np.zeros(0)
 
     if flow.bc == "fixed_flow":
         return finish(_solve_at_flow(geom, blood_eff, flow, q0, p_in, branch_r=branch_r, p_out=p_out))
 
+    def q_collateral(p_end: float) -> float:
+        return max(0.0, (p_coll - p_end) / r_coll)
+
     def residual(q: float) -> float:
         sol = _solve_at_flow(geom, blood_eff, flow, q, p_in, branch_r=branch_r, p_out=p_out)
-        return sol.pressure[-1] - p_out - r_distal * sol.q_out
+        return sol.pressure[-1] - p_out - r_distal * (sol.q_out + q_collateral(sol.pressure[-1]))
 
     q_max = (p_in - p_out) * (1.0 / r_distal + float(np.sum(1.0 / branch_r)))
     q = brentq(residual, q_max * 1e-6, q_max, xtol=1e-14, rtol=1e-10)
     sol = _solve_at_flow(geom, blood_eff, flow, q, p_in, branch_r=branch_r, p_out=p_out)
     sol.reference_q, sol.reference_q_out, sol.reference_branch_q = q0, ref.q_out, ref_bq
+    sol.q_collateral = q_collateral(sol.pressure[-1])
     return finish(sol)

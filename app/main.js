@@ -1,9 +1,9 @@
-import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151625";
-import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151625";
-import { LineChart, fmt } from "./charts.js?v=202611151625";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151625";
-import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151625";
-import { PatientViewer, solvePatient } from "./patient.js?v=202611151625";
+import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151646";
+import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151646";
+import { LineChart, fmt } from "./charts.js?v=202611151646";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151646";
+import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151646";
+import { PatientViewer, solvePatient } from "./patient.js?v=202611151646";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -58,6 +58,14 @@ const BLOOD = [
     hint: "Normal resting brain ≈ 3.3 (Kety & Schmidt 1948)." },
 ];
 
+// Downstream tissue (territory BC only; bvm FlowConditions.collateral_pct / no_reflow_pct)
+const TISSUE = [
+  { key: "collateralPct", label: "Collateral supply", unit: "% of healthy flow", min: 0, max: 60, step: 1, territoryOnly: true,
+    hint: "Leptomeningeal collaterals: the territory flow they would deliver with the vessel fully occluded. 0 = none (worst case). Roughly: poor < 10%, moderate 10–30%, good > 30% (assumed mapping of collateral grades)." },
+  { key: "noReflowPct", label: "No-reflow (microvascular obstruction)", unit: "% of bed", min: 0, max: 90, step: 1, territoryOnly: true,
+    hint: "Share of the distal capillary bed obstructed (microthrombi, swollen endothelium). Distal resistance ÷ (1 − share). Limits flow even after the artery is reopened; perforator beds are not affected." },
+];
+
 // Anatomy-tab shape controls (healthy geometry of the section)
 const SHAPE = [
   { key: "lengthMm", label: "Segment length", unit: "mm", min: 10, max: 40, step: 1 },
@@ -101,8 +109,8 @@ const FIELDS = {
   wallo2: { label: "Wall O₂ transfer index", cmap: "viridis", zero: true, floor: 1.2 },
 };
 
-const SENS_X = [...FACTORS, BC_CONTROLS.territory[3], SHAPE[1], BLOOD[0], BLOOD[1]].map((f) => ({ key: f.key, label: `${f.label}${f.unit ? ` (${f.unit})` : ""}` }));
-const sensDef = (key) => [...FACTORS, ...BC_CONTROLS.territory, ...SHAPE, ...BLOOD].find((f) => f.key === key);
+const SENS_X = [...FACTORS, BC_CONTROLS.territory[3], ...TISSUE, SHAPE[1], BLOOD[0], BLOOD[1]].map((f) => ({ key: f.key, label: `${f.label}${f.unit ? ` (${f.unit})` : ""}` }));
+const sensDef = (key) => [...FACTORS, ...BC_CONTROLS.territory, ...TISSUE, ...SHAPE, ...BLOOD].find((f) => f.key === key);
 const SENS_Y = [
   { key: "flow_pct", label: "Flow, % of healthy", get: (s) => (s.flow_fraction ?? 1) * 100, bands: true },
   { key: "Q_mL_min", label: "Flow (mL/min)", get: (s) => s.Q_mL_min },
@@ -165,7 +173,7 @@ function makeControl(f, container, { primary = false, tag = "", hint = true } = 
   const sync = () => {
     range.value = toSlider(f, params[f.key]);
     num.value = show(f, params[f.key]);
-    const disabled = f.key === "stiffnessKpa" && params.rigid;
+    const disabled = (f.key === "stiffnessKpa" && params.rigid) || (f.territoryOnly && params.bc === "fixed_flow");
     range.disabled = num.disabled = disabled;
     wrap.style.opacity = disabled ? 0.45 : 1;
   };
@@ -216,6 +224,10 @@ function buildControls() {
   for (const f of ADVANCED) makeControl(f, adv);
   for (const f of SHAPE) makeControl(f, $("#shape"));
   for (const f of BLOOD) makeControl(f, $("#blood"), { hint: false });
+  for (const f of TISSUE) makeControl(f, $("#tissue"), { hint: false });
+  const nn = $("#non-newtonian");
+  if (!nn.dataset.wired) { nn.addEventListener("change", () => set("nonNewtonian", nn.checked)); nn.dataset.wired = "1"; }
+  controls.set("nonNewtonian", { sync: () => (nn.checked = params.nonNewtonian) });
   for (const f of BLOOD) makeControl(f, $("#pt-blood"), { tag: "pt-" });
   const phc = $("#pt-hct-couple");
   if (phc && !phc.dataset.wired) { phc.addEventListener("change", () => set("hctCouple", phc.checked)); phc.dataset.wired = "1"; }
@@ -451,13 +463,13 @@ const BAND_COLOR = { normal: "var(--ok)", oligemia: "var(--warn)", "penumbra-ran
 
 function updateRestoration(dev) {
   const card = $("#restore-card"), a = pre.summary, b = post?.summary;
-  $("#flow-before").innerHTML = `${qFmt(a.Q_distal_mL_min)}<small> mL/min</small>`;
+  $("#flow-before").innerHTML = `${qFmt(a.Q_territory_mL_min)}<small> mL/min</small>`;
   $("#after-dev").textContent = dev ? `· ${dev.name}` : "";
   const meterA = $("#meter-after"), meterB = $("#meter-before");
   if (a.flow_fraction == null) {
     card.classList.add("disabled");
     $("#frac-before").textContent = "flow is prescribed";
-    $("#flow-after").innerHTML = b ? `${qFmt(b.Q_distal_mL_min)}<small> mL/min</small>` : "—";
+    $("#flow-after").innerHTML = b ? `${qFmt(b.Q_territory_mL_min)}<small> mL/min</small>` : "—";
     $("#frac-after").textContent = b ? "flow is prescribed" : "no device";
     badge($("#restored"), "", "switch to Brain territory");
     badge($("#band"), "", "—");
@@ -473,7 +485,7 @@ function updateRestoration(dev) {
     $("#flow-after").innerHTML = "—";
     $("#frac-after").textContent = "pick a device";
     Object.assign(meterA.style, { width: `${Math.min(fa, 100)}%`, background: BAND_COLOR[a.ischemia_band] });
-    const deficit = refQ - a.Q_distal_mL_min;
+    const deficit = refQ - a.Q_territory_mL_min;
     badge($("#restored"), "", deficit > 0.01 * refQ ? `deficit ${qFmt(deficit)} mL/min` : "no flow deficit");
     badge($("#band"), a.ischemia_band);
     $("#restore-note").textContent = deficit > 0.01 * refQ
@@ -482,20 +494,23 @@ function updateRestoration(dev) {
     return;
   }
   const fb = b.flow_fraction * 100, r = restoredPct(a, b);
-  $("#flow-after").innerHTML = `${qFmt(b.Q_distal_mL_min)}<small> mL/min</small>`;
+  $("#flow-after").innerHTML = `${qFmt(b.Q_territory_mL_min)}<small> mL/min</small>`;
   $("#frac-after").textContent = `${fb.toFixed(0)}% of healthy`;
   Object.assign(meterA.style, { width: `${Math.min(fb, 100)}%`, background: BAND_COLOR[b.ischemia_band] });
   if (r == null) badge($("#restored"), "", "no flow deficit to restore");
   else if (r > 100.5) badge($("#restored"), "restored-good", "fully restored · flow above baseline");
   else badge($("#restored"), r >= 90 ? "restored-good" : r >= 50 ? "restored-part" : "restored-poor", `restored ${Math.max(r, 0).toFixed(0)}% of deficit`);
   badge($("#band"), b.ischemia_band, `after: ${b.ischemia_band.replace("-", " ")}`);
-  const gain = b.Q_distal_mL_min - a.Q_distal_mL_min;
+  const gain = b.Q_territory_mL_min - a.Q_territory_mL_min;
   const failed = !dev.balloon && !dev.stent && !deviceOpts.success;
-  const remaining = fb < 99 && !failed ? ` The remaining ${(100 - fb).toFixed(0)}% gap comes from the residual narrowing after treatment${params.inletDropMmHg > 0 ? " and the upstream pressure loss" : ""}.` : "";
+  const causes = [post.params.occlusionPct > 0 && "the residual narrowing after treatment", params.inletDropMmHg > 0 && "the upstream pressure loss", params.noReflowPct > 0 && `no-reflow in ${params.noReflowPct}% of the microvascular bed`].filter(Boolean);
+  const remaining = fb < 99 && !failed && causes.length ? ` The remaining ${(100 - fb).toFixed(0)}% gap comes from ${causes.length > 1 ? `${causes.slice(0, -1).join(", ")} and ${causes.at(-1)}` : causes[0]}.` : "";
+  const qz = (q) => (q < 0.0005 ? "0" : qFmt(q));
+  const collNote = params.collateralPct > 0 && params.bc === "territory" ? ` Collaterals supply ${qz(a.Q_collateral_mL_min)} mL/min before and ${qz(b.Q_collateral_mL_min)} after: they carry flow only while the vessel's outlet pressure is below normal.` : "";
   const hctNote = params.hct !== 45 ? ` "Healthy" is a healthy vessel at normal hematocrit (45%); at ${params.hct}% the blood's viscosity ${params.hct < 45 ? "is lower, so flow can exceed 100%" : "is higher, so flow stays below 100%"} even with a fully open lumen. See Oxygen delivery for the net effect.` : "";
   $("#restore-note").textContent = failed
     ? "Pass set as unsuccessful: the clot stays, so flow is unchanged."
-    : `${gain >= 0 ? "+" : ""}${qFmt(gain)} mL/min after treatment.${remaining} The bar's white line marks flow before treatment.${hctNote}`;
+    : `${gain >= 0 ? "+" : ""}${qFmt(gain)} mL/min after treatment.${remaining}${collNote} The bar's white line marks flow before treatment.${hctNote}`;
 }
 
 // ───────────────────────── oxygen delivery ─────────────────────────
@@ -589,7 +604,10 @@ function renderEndpoints(dev) {
     row("Pressure drop ΔP, mmHg", n(segA.dP, 2), segB && n(segB.dP, 2), false, [segA.dP, segB?.dP]) +
     row("Pd/Pa across segment", n(segA.pdpa, 3), segB && n(segB.pdpa, 3), true, [segA.pdpa, segB?.pdpa]) +
     group("Downstream flow distribution, mL/min") +
-    row("Distal territory (outlet)", `${qFmt(a.Q_distal_mL_min)}${pct(a.flow_fraction)}`, b && `${qFmt(b.Q_distal_mL_min)}${pct(b.flow_fraction)}`, true, [a.Q_distal_mL_min, b?.Q_distal_mL_min]);
+    row("Distal territory", `${qFmt(a.Q_territory_mL_min)}${pct(a.flow_fraction)}`, b && `${qFmt(b.Q_territory_mL_min)}${pct(b.flow_fraction)}`, true, [a.Q_territory_mL_min, b?.Q_territory_mL_min]);
+  if (a.Q_collateral_mL_min > 0 || b?.Q_collateral_mL_min > 0) sec +=
+    row("· through the vessel outlet", qFmt(a.Q_distal_mL_min), b && qFmt(b.Q_distal_mL_min)) +
+    row("· through collaterals", a.Q_collateral_mL_min < 0.0005 ? "0" : qFmt(a.Q_collateral_mL_min), b && (b.Q_collateral_mL_min < 0.0005 ? "0" : qFmt(b.Q_collateral_mL_min)));
   if (hasBr) sec +=
     row(`Perforators (${params.nBranches})`, `${qFmt(a.Q_branches_mL_min)}${pct(a.branch_fraction)}`, b && `${qFmt(b.Q_branches_mL_min)}${pct(b.branch_fraction)}`, true, [a.Q_branches_mL_min, b?.Q_branches_mL_min]) +
     row("Perforator share of inflow", `${(100 * a.Q_branches_mL_min / a.Q_mL_min).toFixed(2)}%`, b && `${(100 * b.Q_branches_mL_min / b.Q_mL_min).toFixed(2)}%`);

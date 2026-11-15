@@ -5,8 +5,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
-import { sampleMap } from "./viewer.js?v=202611151625";
-import { MMHG, MLMIN, bloodFactors, oxygenContent, territoryOxygen } from "./model.js?v=202611151625";
+import { sampleMap } from "./viewer.js?v=202611151646";
+import { MMHG, MLMIN, bloodFactors, oxygenContent, territoryOxygen } from "./model.js?v=202611151646";
 
 /**
  * Reduced-order model on one patient lumen, re-solved for the current blood properties.
