@@ -148,17 +148,17 @@ const fromSlider = (f, t) => (f.log ? f.min * (f.max / f.min) ** (t / 1000) : +t
 const decimals = (step) => Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
 const show = (f, v) => (f.display ? f.display(v, params) : f.log ? (v >= 1000 ? (+v.toPrecision(3)).toString() : v.toFixed(0)) : v.toFixed(decimals(f.step)));
 
-function makeControl(f, container, { primary = false, tag = "" } = {}) {
+function makeControl(f, container, { primary = false, tag = "", hint = true } = {}) {
   const wrap = document.createElement("div");
   wrap.className = `factor ${primary ? "primary" : "compact"}`;
   const id = `in-${tag}${f.key}`;
   wrap.innerHTML = `
     <div class="factor-head">
-      <label for="${id}">${f.label}</label>
+      <label for="${id}"${f.hint && !hint ? ` title="${f.hint}"` : ""}>${f.label}</label>
       <span class="num"><input type="number" id="${id}-num" aria-label="${f.label} value" /><span class="unit">${f.unitFn ? f.unitFn() : f.unit}</span></span>
     </div>
     <input type="range" id="${id}" min="${f.log ? 0 : f.min}" max="${f.log ? 1000 : f.max}" step="${f.log ? 1 : f.step}" />
-    ${f.hint ? `<p class="hint">${f.hint}</p>` : ""}`;
+    ${f.hint && hint ? `<p class="hint">${f.hint}</p>` : ""}`;
   container.appendChild(wrap);
   const range = wrap.querySelector(`#${CSS.escape(id)}`), num = wrap.querySelector(`#${CSS.escape(id)}-num`);
   num.step = f.display ? "any" : f.log ? "any" : f.step;
@@ -194,7 +194,7 @@ function makeSegmented(container, options, key) {
 function buildControls() {
   const host = $("#factors");
   for (const f of FACTORS) {
-    const w = makeControl(f, host, { primary: true });
+    const w = makeControl(f, host, { primary: true, hint: false });
     if (f.key === "occlusionPct") {
       const opts = document.createElement("div");
       opts.className = "inline-opts";
@@ -215,7 +215,7 @@ function buildControls() {
   const adv = $("#advanced");
   for (const f of ADVANCED) makeControl(f, adv);
   for (const f of SHAPE) makeControl(f, $("#shape"));
-  for (const f of BLOOD) makeControl(f, $("#blood"));
+  for (const f of BLOOD) makeControl(f, $("#blood"), { hint: false });
   for (const f of BLOOD) makeControl(f, $("#pt-blood"), { tag: "pt-" });
   const phc = $("#pt-hct-couple");
   if (phc && !phc.dataset.wired) { phc.addEventListener("change", () => set("hctCouple", phc.checked)); phc.dataset.wired = "1"; }
@@ -238,7 +238,7 @@ function renderBcControls() {
   const host = $("#bc-controls");
   for (const key of ["flowMlMin", "inletMmHg", "outflowMmHg", "inletDropMmHg"]) controls.delete(key);
   host.innerHTML = "";
-  for (const f of BC_CONTROLS[params.bc]) makeControl(f, host);
+  for (const f of BC_CONTROLS[params.bc]) makeControl(f, host, { hint: false });
   $("#bc").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", b.dataset.value === params.bc));
   $("#bc-hint").textContent = BC_HINT[params.bc];
   syncControls();
