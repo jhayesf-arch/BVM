@@ -10,7 +10,9 @@ pressure, Reynolds number and distal perfusion.
 ## Interactive simulator (start here)
 
 A browser app in `app/`. Move the sliders and the 3D vessel, flow animation and every readout update
-instantly. There is no install and no build step: it needs only Python, to serve the files.
+instantly. A landing page asks for the model (Parametric, with an optional starting scenario, or
+Patient CTA); the toggle in the top bar still switches, and clicking the title returns to the landing
+page. A shared link opens the app directly. There is no install and no build step: it needs only Python, to serve the files.
 
 ```bash
 python3 -m http.server 8766 --directory app
@@ -111,7 +113,7 @@ Notes and limits:
   ECST-like, not NASCET.
 * **Bulb flow needs 3D CFD.** Flow separation and recirculation in the bulb are not captured by
   this model. Export the STL for 3D CFD.
-* **Patient CTA mode (toggle at the top).** This shows a real MCA bifurcation, healthy control
+* **Patient CTA mode (landing page or the toggle at the top).** This shows a real MCA bifurcation, healthy control
   AHMU1218142 from the CMHA dataset (Song et al. 2024, CC BY), in six versions: healthy, 70% plaque,
   95% thrombus, and after thrombectomy, angioplasty and stenting.
   * Color the surface by patch, by measured lumen diameter, or by a 1D wall-shear estimate.

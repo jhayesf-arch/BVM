@@ -1,9 +1,9 @@
-import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151712";
-import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151712";
-import { LineChart, fmt } from "./charts.js?v=202611151712";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151712";
-import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151712";
-import { PatientViewer, solvePatient } from "./patient.js?v=202611151712";
+import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151735";
+import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151735";
+import { LineChart, fmt } from "./charts.js?v=202611151735";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151735";
+import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151735";
+import { PatientViewer, solvePatient } from "./patient.js?v=202611151735";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -1339,6 +1339,30 @@ wirePatient();
 syncControls();
 compute();
 setGeomMode(geomMode);
+wireLanding();
+
+// Landing page: the model choice. Shown on a fresh visit; a shared link (settings in the URL) opens the app directly.
+// The top bar is unchanged; clicking its title returns here.
+function wireLanding() {
+  const landing = $("#landing"), lsel = $("#landing-preset");
+  if (!landing || !lsel) return;
+  lsel.innerHTML = $("#preset").innerHTML.replace(">Custom<", ">Current settings<");
+  const open = () => { lsel.value = ""; landing.hidden = false; landing.querySelector(`button[data-landing="${geomMode}"]`)?.focus(); };
+  const close = () => { landing.hidden = true; };
+  const enter = (mode) => { close(); if (mode !== geomMode) setGeomMode(mode); };
+  $("#landing-cards").addEventListener("click", (e) => { const b = e.target.closest("button[data-landing]"); if (b) enter(b.dataset.landing); });
+  lsel.addEventListener("change", () => {
+    if (lsel.value === "") return;
+    const sel = $("#preset");
+    sel.value = lsel.value;
+    sel.dispatchEvent(new Event("change"));
+    enter("parametric");
+  });
+  const brand = document.querySelector(".topbar .brand");
+  if (brand) { brand.style.cursor = "pointer"; brand.title = "Back to the model choice"; brand.addEventListener("click", open); }
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !landing.hidden) close(); });
+  if (!location.hash) open();
+}
 
 // exposed for debugging and the Python parity check
 window.bvm = { solve, stl, get params() { return params; }, get result() { return result; }, throatRatio };
