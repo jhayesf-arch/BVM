@@ -1,9 +1,9 @@
-import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151803";
-import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151803";
-import { LineChart, fmt } from "./charts.js?v=202611151803";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151803";
-import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151803";
-import { PatientViewer, solvePatient } from "./patient.js?v=202611151803";
+import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151830";
+import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151830";
+import { LineChart, fmt } from "./charts.js?v=202611151830";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151830";
+import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151830";
+import { PatientViewer, solvePatient } from "./patient.js?v=202611151830";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -666,6 +666,10 @@ function renderEndpoints(dev) {
   if (hasBr) sec +=
     row(`Perforators (${params.nBranches})`, `${qFmt(a.Q_branches_mL_min)}${pct(a.branch_fraction)}`, b && `${qFmt(b.Q_branches_mL_min)}${pct(b.branch_fraction)}`, true, [a.Q_branches_mL_min, b?.Q_branches_mL_min]) +
     row("Perforator share of inflow", `${(100 * a.Q_branches_mL_min / a.Q_mL_min).toFixed(2)}%`, b && `${(100 * b.Q_branches_mL_min / b.Q_mL_min).toFixed(2)}%`);
+  const muTxt = (x) => { const lo = x.mu_apparent_min * 1e3, hi = x.mu_apparent_max * 1e3; return hi - lo < 0.005 ? lo.toFixed(2) : `${lo.toFixed(2)}–${hi.toFixed(2)}`; };
+  sec += group(`Blood viscosity along the vessel, mPa·s${params.nonNewtonian ? " · shear-thinning" : ""}`) +
+    row("Apparent viscosity, min–max", muTxt(a), b && muTxt(b)) +
+    row("Highest vs high-shear value", `×${(a.mu_apparent_max / a.mu_effective).toFixed(2)}`, b && `×${(b.mu_apparent_max / b.mu_effective).toFixed(2)}`, false, [a.mu_apparent_max, b?.mu_apparent_max]);
   sec += group("Wall shear stress in segment, Pa") +
     row("Mean WSS", n(segA.wssMean, 2), segB && n(segB.wssMean, 2), null) +
     row("Peak WSS", n(segA.wssMax, 1), segB && n(segB.wssMax, 1), false, [segA.wssMax, segB?.wssMax]) +
@@ -674,6 +678,9 @@ function renderEndpoints(dev) {
   $("#secondary-note").textContent = a.flow_fraction == null
     ? "Fixed-flow mode: the inflow is prescribed, so the distribution shows how it splits, not how much reaches the territory."
     : hasBr ? "Distal = flow leaving the outlet (M2 territory). Perforators = deep territory (basal ganglia, internal capsule)." : "Add perforator branches in the Anatomy tab to see how flow divides between deep and distal territories.";
+  $("#secondary-note").textContent += params.nonNewtonian
+    ? " Shear-thinning blood thickens where shear is low (slow flow, wide lumen); the high-shear value is the viscosity set under Blood & oxygen."
+    : " Blood is Newtonian, so viscosity is uniform; tick Shear-thinning blood under Blood & oxygen to see it vary.";
 
   // safety
   const lowA = lengthWhere(pre, (w) => w < LOW_WSS_PA), lowB = post ? lengthWhere(post, (w) => w < LOW_WSS_PA) : null;
