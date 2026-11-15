@@ -6,7 +6,7 @@
   <title>BVM · Interactive Cerebral Vessel Simulator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=202611151646" />
+  <link rel="stylesheet" href="styles.css?v=202611151712" />
   <script type="importmap">
     {
       "imports": {
@@ -74,9 +74,14 @@
           <h2>Blood &amp; oxygen</h2>
           <div id="pt-blood"></div>
           <label class="check"><input type="checkbox" id="pt-hct-couple" checked /> Viscosity follows hematocrit (Pries 1994)</label>
+          <label class="check" title="Carreau model (Cho &amp; Kensey 1991): blood thickens at low shear. Evaluated at each station's wall shear rate along this patient's M1."><input type="checkbox" id="pt-non-newtonian" /> Shear-thinning blood (Carreau, non-Newtonian)</label>
           <p class="hint" id="pt-blood-derived"></p>
-          <p class="hint">Shared with Parametric mode. The six lumens are re-solved for these values with the same 1D model
+          <p class="hint">Shared with Parametric mode, including the downstream-tissue settings below. The six lumens are re-solved for these values with the same 1D model
             (on this patient's measured M1), so flow, pressure and the oxygen columns update as you move them.</p>
+        </section>
+        <section>
+          <h2>Downstream tissue</h2>
+          <div id="pt-tissue"></div>
         </section>
                 <section class="pt-why">
           <h2>Why there are no sliders here</h2>
@@ -377,6 +382,6 @@
     </aside>
   </main>
 
-  <script type="module" src="main.js?v=202611151646"></script>
+  <script type="module" src="main.js?v=202611151712"></script>
 </body>
 </html>

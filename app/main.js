@@ -1,9 +1,9 @@
-import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151646";
-import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151646";
-import { LineChart, fmt } from "./charts.js?v=202611151646";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151646";
-import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151646";
-import { PatientViewer, solvePatient } from "./patient.js?v=202611151646";
+import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151712";
+import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151712";
+import { LineChart, fmt } from "./charts.js?v=202611151712";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151712";
+import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151712";
+import { PatientViewer, solvePatient } from "./patient.js?v=202611151712";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -173,7 +173,8 @@ function makeControl(f, container, { primary = false, tag = "", hint = true } = 
   const sync = () => {
     range.value = toSlider(f, params[f.key]);
     num.value = show(f, params[f.key]);
-    const disabled = (f.key === "stiffnessKpa" && params.rigid) || (f.territoryOnly && params.bc === "fixed_flow");
+    // patient mode always uses the territory BC, so its tissue sliders stay live
+    const disabled = (f.key === "stiffnessKpa" && params.rigid) || (f.territoryOnly && params.bc === "fixed_flow" && !tag);
     range.disabled = num.disabled = disabled;
     wrap.style.opacity = disabled ? 0.45 : 1;
   };
@@ -225,9 +226,10 @@ function buildControls() {
   for (const f of SHAPE) makeControl(f, $("#shape"));
   for (const f of BLOOD) makeControl(f, $("#blood"), { hint: false });
   for (const f of TISSUE) makeControl(f, $("#tissue"), { hint: false });
-  const nn = $("#non-newtonian");
-  if (!nn.dataset.wired) { nn.addEventListener("change", () => set("nonNewtonian", nn.checked)); nn.dataset.wired = "1"; }
-  controls.set("nonNewtonian", { sync: () => (nn.checked = params.nonNewtonian) });
+  if ($("#pt-tissue")) for (const f of TISSUE) makeControl(f, $("#pt-tissue"), { tag: "pt-", hint: false });
+  const nnBoxes = ["#non-newtonian", "#pt-non-newtonian"].map($).filter(Boolean);
+  for (const nn of nnBoxes) if (!nn.dataset.wired) { nn.addEventListener("change", () => set("nonNewtonian", nn.checked)); nn.dataset.wired = "1"; }
+  controls.set("nonNewtonian", { sync: () => nnBoxes.forEach((nn) => (nn.checked = params.nonNewtonian)) });
   for (const f of BLOOD) makeControl(f, $("#pt-blood"), { tag: "pt-" });
   const phc = $("#pt-hct-couple");
   if (phc && !phc.dataset.wired) { phc.addEventListener("change", () => set("hctCouple", phc.checked)); phc.dataset.wired = "1"; }
@@ -1243,7 +1245,7 @@ function renderPatientTable() {
       `<td>${R[x.key].flowPct.toFixed(0)}%</td><td>${R[x.key].dpMmHg.toFixed(1)}</td><td>${restored(x.key)}</td></tr>`).join("") + `</tbody>`;
   const cur = by[ptVariant], r = R[ptVariant];
   $("#pt-note").textContent = `${cur.label}. ${cur.throat_diameter_mm ? `Measured throat ${cur.throat_diameter_mm.toFixed(2)} mm (${(100 * cur.throat_ratio).toFixed(1)}% of the local diameter). ` : ""}` +
-    `Distal flow ${r.qMlMin.toFixed(1)} mL/min. Flow % is relative to this healthy lumen at a normal hematocrit (45%). ` +
+    `Distal flow ${r.qMlMin.toFixed(1)} mL/min${r.qCollateralMlMin > 0.0005 ? ` (M1 ${r.qM1MlMin.toFixed(1)} + collaterals ${r.qCollateralMlMin.toFixed(1)})` : ""}. Flow % is relative to this healthy lumen at a normal hematocrit (45%). ` +
     `Device outcomes are prescribed lumens (app's device rules), not simulated device mechanics. Click a row or a lumen on the left to view it.`;
 }
 

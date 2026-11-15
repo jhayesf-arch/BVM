@@ -122,6 +122,9 @@ Notes and limits:
     exactly at default blood. An Oxygen delivery card shows, for each lumen, O₂ delivered to the
     territory (mL O₂/min and % of healthy), CBF, and the extraction needed (normal / compensated /
     unmet). This geometry has no perforators, because they were removed during segmentation.
+  * **Downstream tissue** (collateral supply, no-reflow) and the shear-thinning blood option apply
+    here too, with the same formulas as the parametric engine; at their defaults the six lumens give
+    exactly the exported values.
   * The surfaces are the CFD-ready files from `docs/cfd-variants-AHMU1218142.md`
     (`app/data/patient/`, about 6.4 MB). Export gives that version's STL.
 * **Export:** STL (mm, with wall/inlet/outlet patches), CSV profiles, JSON, PNG, and a shareable link.
