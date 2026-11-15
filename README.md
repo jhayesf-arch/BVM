@@ -117,6 +117,11 @@ Notes and limits:
   * Color the surface by patch, by measured lumen diameter, or by a 1D wall-shear estimate.
   * The charts show diameter, pressure, Reynolds number and WSS along the patient's M1, and a card
     compares each version's predicted distal flow and flow restored.
+  * **Blood & oxygen** inputs (shared with Parametric mode) re-solve all six lumens in the browser.
+    This is the same 1D model run on the patient's measured M1 profile; it matches the Python results
+    exactly at default blood. An Oxygen delivery card shows, for each lumen, O₂ delivered to the
+    territory (mL O₂/min and % of healthy), CBF, and the extraction needed (normal / compensated /
+    unmet). This geometry has no perforators, because they were removed during segmentation.
   * The surfaces are the CFD-ready files from `docs/cfd-variants-AHMU1218142.md`
     (`app/data/patient/`, about 6.4 MB). Export gives that version's STL.
 * **Export:** STL (mm, with wall/inlet/outlet patches), CSV profiles, JSON, PNG, and a shareable link.

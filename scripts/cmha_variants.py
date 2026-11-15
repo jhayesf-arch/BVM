@@ -293,11 +293,16 @@ def export_web(sid, key, ext, n_orig, C, s, D, Dl, qd, max_r, lesion_span=None):
     if lesion_span and loss > 0:
         s_end = lesion_span[0] + lesion_span[1] / 2
         dp = dp + loss * MMHG * np.clip((s - s[i_t]) / max(s_end - s[i_t], 1e-9), 0, 1)
-    prof = {"s_mm": np.round(s, 3).tolist(), "D_mm": np.round(Dl, 4).tolist(), "D_healthy_mm": np.round(D, 4).tolist(),
+    # full precision: the in-app model re-solves from these, and a 0.13 mm throat is sensitive (ΔP ∝ r⁻⁴)
+    prof = {"s_mm": s.tolist(), "D_mm": Dl.tolist(), "D_healthy_mm": D.tolist(),
             "wss_Pa": np.round(4 * MU * qd / (np.pi * r**3), 3).tolist(), "p_mmHg": np.round(-dp / MMHG, 4).tolist(),
             "re": np.round(4 * RHO * qd / (np.pi * MU * Dl * 1e-3), 2).tolist(), "q_mL_min": qd * 6e7}
     meta = {"counts": counts, "patch_order": ext.names, "n_original_wall": int(n_orig),
-            "face_station": face_s.tolist(), "profile": prof}
+            "face_station": face_s.tolist(), "profile": prof,
+            # what the in-app patient model needs to re-solve this lumen for other blood properties
+            "lesion_span_mm": list(lesion_span) if lesion_span else None,
+            "constants": {"mu_Pa_s": MU, "rho_kg_m3": RHO, "young_tsai_kt": YOUNG_TSAI_KT, "q_ref_mL_min": 153.0,
+                          "p_in_mmHg": 85.0, "p_venous_mmHg": 10.0}}
     (out / f"{key}.json").write_text(json.dumps(meta, separators=(",", ":")))
 
 

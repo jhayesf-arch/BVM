@@ -6,6 +6,62 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { sampleMap } from "./viewer.js";
+import { MMHG, MLMIN, bloodFactors, oxygenContent, territoryOxygen } from "./model.js";
+
+/**
+ * Reduced-order model on one patient lumen, re-solved for the current blood properties.
+ * Mirrors territory_flow() / lesion_dp() in scripts/cmha_variants.py: Poiseuille on the measured M1 area
+ * profile plus the Young–Tsai expansion loss, territory BC (inlet 85 mmHg, venous 10 mmHg, distal
+ * resistance calibrated on the healthy lumen at 153 mL/min and a hematocrit of 45%). Hematocrit scales
+ * the viscosity in M1 and the distal resistance exactly as the parametric engine does.
+ */
+export function solvePatient(meta, p) {
+  const c = meta.constants, prof = meta.profile;
+  const s = prof.s_mm.map((x) => x * 1e-3), Dh = prof.D_healthy_mm, Dl = prof.D_mm, n = s.length;
+  const { muEff, distalScale } = bloodFactors({ ...p, mu: c.mu_Pa_s, diameterMm: Dh[0] });
+  const rho = c.rho_kg_m3, q0 = c.q_ref_mL_min * MLMIN;
+  let iT = 0;
+  for (let i = 1; i < n; i++) if (Dl[i] / Dh[i] < Dl[iT] / Dh[iT]) iT = i;
+  const parts = (D, mu, q) => {
+    let visc = 0;
+    const g = D.map((d) => (8 * mu * q) / (Math.PI * (d / 2e3) ** 4));
+    for (let i = 1; i < n; i++) visc += 0.5 * (g[i] + g[i - 1]) * (s[i] - s[i - 1]);
+    let loss = 0;
+    if (D === Dl) {
+      const a0 = Math.PI * (Dh[iT] / 2e3) ** 2, a1 = Math.PI * (Dl[iT] / 2e3) ** 2;
+      if (a1 < 0.999 * a0) loss = c.young_tsai_kt * (rho / 2) * (q / a0) ** 2 * (a0 / a1 - 1) ** 2;
+    }
+    return { visc: visc / MMHG, loss: loss / MMHG, g };
+  };
+  const avail = c.p_in_mmHg - c.p_venous_mmHg;
+  const dpH = parts(Dh, c.mu_Pa_s, q0).visc;               // calibration: healthy lumen, Hct 45%
+  const rD = ((avail - dpH) / q0) * distalScale;
+  let lo = q0 * 1e-6, hi = q0 * 3;
+  for (let k = 0; k < 80; k++) {
+    const q = 0.5 * (lo + hi), pp = parts(Dl, muEff, q);
+    if (pp.visc + pp.loss + rD * q > avail) hi = q; else lo = q;
+  }
+  const q = 0.5 * (lo + hi), { visc, loss, g } = parts(Dl, muEff, q);
+  // profiles along M1 at that flow (same construction as the export)
+  const pr = new Array(n).fill(0);
+  let cum = 0;
+  for (let i = 1; i < n; i++) { cum += 0.5 * (g[i] + g[i - 1]) * (s[i] - s[i - 1]); pr[i] = cum; }
+  if (meta.lesion_span_mm && loss > 0) {
+    const sEnd = (meta.lesion_span_mm[0] + meta.lesion_span_mm[1] / 2) * 1e-3;
+    for (let i = 0; i < n; i++) pr[i] += loss * MMHG * Math.min(Math.max((s[i] - s[iT]) / Math.max(sEnd - s[iT], 1e-9), 0), 1);
+  }
+  const qMl = q / MLMIN;
+  return {
+    qMlMin: qMl, flowPct: (100 * q) / q0, dpMmHg: visc + loss, muEff, distalScale,
+    oxygen: territoryOxygen(qMl, c.q_ref_mL_min, p), CaO2: oxygenContent(p),
+    profile: {
+      s_mm: prof.s_mm, D_mm: Dl, D_healthy_mm: Dh,
+      p_mmHg: pr.map((x) => -x / MMHG),
+      wss_Pa: Dl.map((d) => (4 * muEff * q) / (Math.PI * (d / 2e3) ** 3)),
+      re: Dl.map((d) => (4 * rho * q) / (Math.PI * muEff * d * 1e-3)),
+    },
+  };
+}
 
 const PATCH_COLORS = {
   m1: 0xd04a3b, branch: 0xb8665c, extension: 0x8a97a8, inlet: 0x4c8dff, outlet_1: 0x3ecf8e, outlet_2: 0xf5b041,
@@ -72,11 +128,11 @@ export class PatientViewer {
   }
 
   /** mode: "patch" | "diameter" | "wss". Returns the [lo, hi] range used (null for patches). */
-  color(mode, range = null) {
+  color(mode, range = null, liveProfile = null) {
     const { geom, meta } = this.current;
     const col = geom.attributes.color.array, c = new THREE.Color();
     const { wall, inlet, outlet_1: o1 } = meta.counts;
-    const st = meta.face_station, prof = meta.profile;
+    const st = meta.face_station, prof = liveProfile ?? meta.profile;
     const field = mode === "diameter" ? prof.D_mm : mode === "wss" ? prof.wss_Pa : null;
     let lo = 0, hi = 1;
     if (field) {
