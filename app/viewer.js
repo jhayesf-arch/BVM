@@ -192,6 +192,20 @@ export class Viewer {
     this.controls.update();
   }
 
+  /** Faint overlay of an imported CAD surface (triangle soup in model metres), or null to remove it. */
+  setGhost(tri) {
+    if (this.ghost) { this.group.remove(this.ghost); this.ghost.geometry.dispose(); this.ghost = null; }
+    if (!tri || this.zMid == null) return;
+    const pos = new Float32Array(tri.length);
+    for (let i = 0; i < tri.length; i += 3) pos.set(this._toScene(tri[i], tri[i + 1], tri[i + 2]), i);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    this.ghostMat ??= new THREE.MeshBasicMaterial({ color: 0xcfe3ff, wireframe: true, transparent: true, opacity: 0.045, depthWrite: false });
+    this.ghost = new THREE.Mesh(g, this.ghostMat);
+    this.ghost.renderOrder = 4;
+    this.group.add(this.ghost);
+  }
+
   setOpacity(o) { this.wallMat.opacity = o; this.wallMat.depthWrite = o >= 0.99; }
   setParticles(on) { this.showParticles = on; this.particles.visible = on; }
 

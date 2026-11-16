@@ -1,7 +1,8 @@
 // Browser self-test for the JS engine and device logic (verification evidence; see
 // docs/credibility-assessment-plan.md). Open app/selftest.html locally or on the live site.
-import * as M from "./model.js?v=202611151830";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, defaultOptions, treat } from "./devices.js?v=202611151830";
+import * as M from "./model.js?v=202611152100";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, defaultOptions, treat } from "./devices.js?v=202611152100";
+import * as C from "./cad.js?v=202611152100";
 
 export function runSelfTest() {
   const results = [];
@@ -98,6 +99,57 @@ export function runSelfTest() {
     chk(Math.abs(z.pulse.PI_inlet) < 1e-12 && near(z.pulse.wss_max_systolic_Pa, z.wss_max, 1e-9), "PI 0 must give steady flow");
     const c = P({ occlusionPct: 80, collateralPct: 20 }), avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
     chk(near(avg(c.pulse.waveform_Q_inlet_mL_min), c.Q_mL_min, 1e-12) && near(avg(c.pulse.waveform_Q_territory_mL_min), c.Q_territory_mL_min, 1e-12), "waveforms must average to the mean flows");
+  }
+
+  // ── CAD import: centerline/lumen extraction on known shapes, and a parametric → STL → import round trip ──
+  const cg = group("CAD import: centerline and lumen extraction");
+  {
+    const chk = (ok, msg) => { cg.cases++; if (!ok) cg.fails.push(msg); };
+    const ext = (tri, o = {}) => C.extractLumen(C.weld(tri), { scale: 1e-3, ...o });
+    const Dof = (e) => e.r.map((r) => 2e3 * r), L = (e) => e.s[e.s.length - 1] * 1e3;
+    const poly = Math.sqrt((40 / (2 * Math.PI)) * Math.sin((2 * Math.PI) / 40));   // 40-gon area → equivalent diameter
+    const st = (u) => [0, 0, 20 * u];
+    const a = ext(C.tubeMesh(st, () => 1.5));
+    chk(near(L(a), 20, 1e-6) && Dof(a).every((d) => near(d, 3 * poly, 1e-3)), `straight tube: L ${L(a)}, D ${Dof(a)[0]}`);
+    chk(Math.abs(a.tortuosity - 1) < 1e-6 && Math.max(...a.x.map(Math.abs)) < 1e-9, "straight tube must have a straight centerline");
+    const bump = (u) => (Math.abs(u - 0.5) < 0.15 ? 0.5 * (1 + Math.cos((Math.PI * (u - 0.5)) / 0.15)) : 0);
+    const s70 = Dof(ext(C.tubeMesh(st, (u) => 1.5 * (1 - 0.7 * bump(u)), { nu: 300 })));
+    chk(near(Math.min(...s70), 0.9 * poly, 5e-3), `70% stenosis throat ${Math.min(...s70)}`);
+    const tp = ext(C.tubeMesh(st, (u) => 1.5 - 0.5 * u)), tr = ext(C.tubeMesh(st, (u) => 1.5 - 0.5 * u), { reverse: true });
+    chk(Dof(tp)[0] > Dof(tp)[tp.r.length - 1] && Dof(tr)[0] < Dof(tr)[tr.r.length - 1], "inlet is the larger end unless reversed");
+    const arc = ext(C.tubeMesh((u) => [10 - 10 * Math.cos((u * Math.PI) / 2), 0, 10 * Math.sin((u * Math.PI) / 2)], () => 1.5));
+    chk(near(L(arc), 5 * Math.PI, 5e-3), `90° bend R 10 mm: length ${L(arc)} vs ${5 * Math.PI}`);
+    const ub = ext(C.tubeMesh((u) => [6 - 6 * Math.cos(u * Math.PI), 0, 6 * Math.sin(u * Math.PI)], () => 1.2, { nu: 240 }));
+    chk(near(L(ub), 6 * Math.PI, 5e-3), `U-bend (both caps in one plane): length ${L(ub)} vs ${6 * Math.PI}`);
+    const hw = ext(C.tubeMesh(st, () => 1.5, { wall: 0.3 }));
+    chk(near(hw.wallMm, 0.3 * poly, 0.02) && near(Dof(hw)[200], 3 * poly, 1e-3), `hollow wall: wall ${hw.wallMm}, lumen ${Dof(hw)[200]}`);
+    const op = C.tubeMesh(st, () => 1.5), opn = ext(op.slice(0, op.length - 2 * 40 * 9));
+    chk(opn.open && near(L(opn), 20, 1e-3), "open-ended surface (no caps)");
+    const el = C.tubeMesh(st, () => 1, { nt: 120 });
+    for (let i = 0; i < el.length; i += 3) el[i] *= 2;          // 2:1 elliptical lumen: rₕ⁴ = 2a³b³/(a²+b²)
+    chk(near(ext(el).r[200] * 1e3, (16 / 5) ** 0.25, 2e-3), `elliptical lumen resistance radius ${ext(el).r[200] * 1e3}`);
+    const stl = C.parseSTL(C.toBinarySTL(op));
+    chk(stl.length === op.length && near(L(ext(stl)), 20, 1e-6), "binary STL round trip");
+    chk(C.guessUnits(C.weld(C.tubeMesh((u) => [0, 0, 0.02 * u], () => 0.0015))) === "m", "metre-scale file guessed as metres");
+    // round trip: parametric vessel → triangulated surface → import → same hemodynamics
+    for (const extra of [{ occlusionPct: 70 }, { occlusionPct: 60, tortuosity: 1.2, waves: 1 }, { occlusionPct: 50, tortuosity: 1.1, waves: 2, taper: 0.8 }]) {
+      const p = { ...M.DEFAULTS, ...extra, nBranches: 0, rigid: true }, r = M.solve(p), g = r.geom, n = g.s.length, nT = 64, tri = [];
+      const v = (i, j) => { const th = (2 * Math.PI * j) / nT; return [0, 1, 2].map((k) => ([g.points.x, g.points.y, g.points.z][k][i] + r.radius[i] * (Math.cos(th) * g.N[i][k] + Math.sin(th) * g.B[i][k])) * 1e3); };
+      const c = (i) => [g.points.x[i] * 1e3, g.points.y[i] * 1e3, g.points.z[i] * 1e3];
+      for (let i = 0; i < n - 1; i++) for (let j = 0; j < nT; j++) tri.push(...v(i, j), ...v(i, (j + 1) % nT), ...v(i + 1, (j + 1) % nT), ...v(i, j), ...v(i + 1, (j + 1) % nT), ...v(i + 1, j));
+      for (let j = 0; j < nT; j++) tri.push(...c(0), ...v(0, (j + 1) % nT), ...v(0, j), ...c(n - 1), ...v(n - 1, j), ...v(n - 1, (j + 1) % nT));
+      const e = ext(Float32Array.from(tri));
+      M.setCadGeometry(e);
+      try {
+        const b = M.solve({ ...p, geometry: "cad", lengthMm: L(e), diameterMm: 2e3 * e.r[0], taper: e.r[e.r.length - 1] / e.r[0], occlusionPct: 0 }).summary, a = r.summary;
+        const tag = JSON.stringify(extra);
+        chk(Math.abs(b.flow_fraction - a.flow_fraction) < 0.005, `${tag}: flow ${b.flow_fraction} vs ${a.flow_fraction}`);
+        chk(near(b.dP_mmHg, a.dP_mmHg, 0.02), `${tag}: ΔP ${b.dP_mmHg} vs ${a.dP_mmHg}`);
+        chk(near(b.wss_max, a.wss_max, 0.05), `${tag}: peak WSS ${b.wss_max} vs ${a.wss_max}`);
+        chk(Math.abs(b.diameter_stenosis_pct - a.diameter_stenosis_pct) < 0.5, `${tag}: stenosis ${b.diameter_stenosis_pct}% vs ${a.diameter_stenosis_pct}%`);
+      } finally { M.setCadGeometry(null); }
+    }
+    chk(!M.usesCad({ ...M.DEFAULTS, geometry: "cad" }), "cleared CAD geometry falls back to the parametric vessel");
   }
 
   // ── engine: robustness across a parameter grid (both grids the app uses) ──
