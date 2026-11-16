@@ -251,7 +251,7 @@ details[open] summary { margin-bottom: 14px; }
 .restore.disabled .restore-grid, .restore.disabled .meter { opacity: .55; }
 
 /* left side tabs + anatomy */
-.side-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: -4px 0 16px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 3px; }
+.side-tabs { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2px; margin: -4px 0 16px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 3px; }
 .side-tabs button { border: 0; background: none; padding: 7px 4px; border-radius: 7px; cursor: pointer; color: var(--muted); font-weight: 500; }
 .side-tabs button.active { background: #24364b; color: var(--text); }
 .side-tabs .mono { display: block; font-size: 10.5px; margin-top: 1px; }
@@ -373,3 +373,18 @@ body.patient-mode .patient-side { display: block !important; }
 .pulse-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 6px; font-size: 11.5px; color: var(--muted); }
 .pulse-legend i { display: inline-block; width: 16px; margin-right: 3px; vertical-align: middle; }
 .pulse-legend i + i { margin-left: 0; }
+
+/* CAD import tab */
+.cad-drop { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px; margin: 10px 0 6px; border: 1.5px dashed var(--border); border-radius: 10px; color: var(--muted); font-size: 12.5px; }
+.cad-drop .btn { color: var(--text); }
+.cad-drop.over { border-color: #4c8dff; background: rgba(76, 141, 255, 0.08); }
+.cad-status { font-size: 12.5px; margin: 6px 0 0; color: var(--muted); }
+.cad-status.err { color: #ff7a6b; }
+.cad-opts { display: grid; gap: 6px; margin-bottom: 10px; }
+.cad-opts .select-wrap select { width: auto; }
+.cad-warn { margin: 6px 0 10px; padding-left: 18px; color: #f5b041; }
+.cad-warn:empty { display: none; }
+.landing-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.landing-card .landing-btns .btn { align-self: auto; }
+#cad-table td:first-child { white-space: normal; width: 52%; }
+#cad-table td.v { white-space: normal; }

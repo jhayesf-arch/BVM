@@ -6,7 +6,7 @@
   <title>BVM · Interactive Cerebral Vessel Simulator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=202611151830" />
+  <link rel="stylesheet" href="styles.css?v=202611152100" />
   <script type="importmap">
     {
       "imports": {
@@ -32,12 +32,15 @@
         <div class="landing-card">
           <h2>Parametric</h2>
           <p>An idealized vessel built from sliders: five stroke-prone sections, any stenosis or clot, wall
-            stiffness, blood and downstream tissue, and the device panel.</p>
+            stiffness, blood and downstream tissue, and the device panel. You can also import your own vessel design (CAD).</p>
           <label class="select-wrap landing-scenario">
             <span>Scenario</span>
             <select id="landing-preset"></select>
           </label>
-          <button class="btn" data-landing="parametric">Open parametric model →</button>
+          <div class="landing-btns">
+            <button class="btn" data-landing="parametric">Open parametric model →</button>
+            <button class="btn ghost" data-landing="cad" title="Load an STL, OBJ, STEP or IGES vessel design">Import a CAD design…</button>
+          </div>
         </div>
         <div class="landing-card">
           <h2>Patient CTA</h2>
@@ -128,6 +131,52 @@
       <div class="side-tabs param-only" role="tablist" aria-label="Input groups">
         <button role="tab" class="active" data-side="pathology" aria-selected="true">Pathology</button>
         <button role="tab" data-side="anatomy" aria-selected="false">Anatomy <span class="mono muted" id="side-section"></span></button>
+        <button role="tab" data-side="cad" aria-selected="false">CAD import <span class="mono muted" id="side-cad">none</span></button>
+      </div>
+
+      <div class="side-body param-only" data-side-body="cad" hidden>
+        <section>
+          <h2>Test your own design</h2>
+          <p class="hint">Load a vessel or vessel-mimic CAD file. The app finds its centerline and the lumen cross-sections along it,
+            then runs the same 1D model on that shape. Blood, boundary condition, wall stiffness, downstream tissue,
+            pulsatility, the Occlusion slider and the device panel all still apply.</p>
+          <div class="cad-drop" id="cad-drop">
+            <input type="file" id="cad-file" accept=".stl,.obj,.step,.stp,.iges,.igs" hidden />
+            <button class="btn" id="cad-pick">Choose file…</button>
+            <span>or drop it here · STL, OBJ, STEP, IGES</span>
+          </div>
+          <p class="hint">Works with a lumen (fluid) solid, an open lumen surface, or a hollow vessel wall (its inner
+            surface is the lumen and the gap sets the wall thickness). No file to hand?
+            <a href="#" id="cad-example">Load an example design</a> (curved tube with a 60% narrowing) ·
+            <a href="#" id="cad-example-dl">download it as STL</a>.</p>
+          <p class="cad-status" id="cad-status" hidden></p>
+        </section>
+        <section id="cad-loaded" hidden>
+          <h2>Imported geometry · <span id="cad-name"></span></h2>
+          <div class="cad-opts">
+            <label class="select-wrap"><span>File units</span>
+              <select id="cad-units">
+                <option value="mm">mm</option><option value="cm">cm</option><option value="m">m</option>
+                <option value="in">inch</option><option value="um">µm</option>
+              </select>
+            </label>
+            <label class="check"><input type="checkbox" id="cad-reverse" /> Reverse flow direction (swap inlet and outlet)</label>
+            <label class="check"><input type="checkbox" id="cad-ghost" checked /> Show the imported surface in the 3D view</label>
+          </div>
+          <table class="basis" id="cad-table"></table>
+          <ul class="cad-warn hint" id="cad-warn"></ul>
+          <button class="btn ghost small" id="cad-clear">Remove · back to the parametric vessel</button>
+        </section>
+        <section>
+          <h2>How it is modeled</h2>
+          <p class="hint">Each cross-section is replaced by the circle with the same Poiseuille resistance (Saint-Venant:
+            exact for round and elliptical lumens, within ~8% for a square), with the Dean curvature correction from the centerline. Where the lumen narrows, the Young–Tsai expansion loss is applied at the tightest
+            point relative to a smooth envelope between the end diameters. <b>Flow % compares the design with a straight,
+            smooth tube</b> of the same length, inlet diameter and taper, so built-in narrowings, bends and bulges show as lost flow.
+            Only the main path from inlet to outlet is followed; side branches in the file are cut off and take no flow (add
+            perforators under Anatomy if needed). Non-circular sections, separation and recirculation need 3D CFD: Export ▾ → 3D
+            geometry gives the reconstructed tube, or mesh the original file.</p>
+        </section>
       </div>
 
       <div class="side-body param-only" data-side-body="anatomy" hidden>
@@ -430,6 +479,6 @@
     </aside>
   </main>
 
-  <script type="module" src="main.js?v=202611151830"></script>
+  <script type="module" src="main.js?v=202611152100"></script>
 </body>
 </html>

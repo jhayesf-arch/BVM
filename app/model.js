@@ -196,12 +196,30 @@ function sineArc(chord, amp, waves) {
   return L;
 }
 
+// ---------- imported CAD lumen (app/cad.js) ----------
+// One imported design at a time, used when p.geometry === "cad". Arrays in metres: arc length s, centerline
+// x/y/z (inlet at the origin, flow along +z) and the equivalent-circle radius r.
+let CAD = null;
+export function setCadGeometry(g) { CAD = g ? { ...g, L: g.s[g.s.length - 1] } : null; }
+export const cadGeometry = () => CAD;
+export const usesCad = (p) => p.geometry === "cad" && !!CAD;
+
+/** Healthy-shape envelope of an imported lumen: the straight line between its end radii, or the lumen where wider. */
+function cadBase(r) {
+  const n = r.length, out = new Float64Array(n);
+  for (let i = 0; i < n; i++) out[i] = Math.max(r[i], r[0] + ((r[n - 1] - r[0]) * i) / (n - 1));
+  return out;
+}
+
 // ---------- geometry ----------
 export function buildGeometry(p, n = 401) {
-  const L = p.lengthMm * 1e-3;
+  const cad = usesCad(p);
+  const L = cad ? CAD.L : p.lengthMm * 1e-3;
   const s = linspace(0, L, n);
   const px = new Float64Array(n), py = new Float64Array(n), pz = new Float64Array(n);
-  if (p.tortuosity <= 1 + 1e-9) {
+  if (cad) {
+    px.set(interp(s, CAD.s, CAD.x)); py.set(interp(s, CAD.s, CAD.y)); pz.set(interp(s, CAD.s, CAD.z));
+  } else if (p.tortuosity <= 1 + 1e-9) {
     pz.set(s);
   } else {
     const chord = L / p.tortuosity;
@@ -224,6 +242,20 @@ export function buildGeometry(p, n = 401) {
   const tx = gradient(T.map((t) => t[0]), h), ty = gradient(T.map((t) => t[1]), h), tz = gradient(T.map((t) => t[2]), h);
   const curvature = new Float64Array(n);
   for (let i = 0; i < n; i++) curvature[i] = Math.hypot(tx[i], ty[i], tz[i]);
+  if (cad) {
+    // a meshed centerline carries small wiggles that a second derivative amplifies; average dT/ds (as a
+    // vector, so opposite bends still cancel at an inflection) over about half a lumen radius
+    const rm = CAD.r.reduce((a, b) => a + b, 0) / CAD.r.length, sig = (0.5 * rm) / h, w = Math.ceil(3 * sig);
+    if (sig >= 0.5) {
+      const sm = (v) => Float64Array.from(v, (_, i) => {
+        let acc = 0, ws = 0;
+        for (let j = Math.max(0, i - w); j <= Math.min(n - 1, i + w); j++) { const wt = Math.exp(-((j - i) ** 2) / (2 * sig * sig)); acc += wt * v[j]; ws += wt; }
+        return acc / ws;
+      });
+      const [ax, ay, az] = [sm(tx), sm(ty), sm(tz)];
+      for (let i = 0; i < n; i++) curvature[i] = Math.hypot(ax[i], ay[i], az[i]);
+    }
+  }
 
   // rotation-minimizing frames (double reflection)
   const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -250,10 +282,15 @@ export function buildGeometry(p, n = 401) {
   const r0 = (p.diameterMm / 2) * 1e-3, radius = new Float64Array(n), base = new Float64Array(n);
   const bump = (si, c, half) => { const xi = (si - c) / half; return Math.abs(xi) < 1 ? 0.5 * (1 + Math.cos(Math.PI * xi)) : 0; };
   const depth = p.occlusionPct > 0 ? 1 - throatRatio(p) : 0;
+  const cadR = cad ? interp(s, CAD.s, CAD.r) : null, cadB = cad ? cadBase(cadR) : null;
   for (let i = 0; i < n; i++) {
-    let r = r0 * (1 + ((p.taper ?? 1) - 1) * (s[i] / L));
-    if (p.bulbPct > 0) r *= 1 + (p.bulbPct / 100) * bump(s[i], p.bulbCenter * L, (p.bulbLengthMm / 2) * 1e-3);
-    base[i] = r;
+    let r;
+    if (cad) { r = cadR[i]; base[i] = cadB[i]; }
+    else {
+      r = r0 * (1 + ((p.taper ?? 1) - 1) * (s[i] / L));
+      if (p.bulbPct > 0) r *= 1 + (p.bulbPct / 100) * bump(s[i], p.bulbCenter * L, (p.bulbLengthMm / 2) * 1e-3);
+      base[i] = r;
+    }
     radius[i] = depth ? r * (1 - depth * bump(s[i], p.stenosisCenter * L, (p.stenosisLengthMm / 2) * 1e-3)) : r;
   }
   let throat = 0;
@@ -265,7 +302,27 @@ export function buildGeometry(p, n = 401) {
     const frac = p.branchStart + ((p.branchEnd - p.branchStart) * (k + 0.5)) / p.nBranches;
     branchIdx.push(Math.min(Math.max(Math.floor(frac * (n - 1) + 0.5), 1), n - 2));
   }
-  return { s, points: { x: px, y: py, z: pz }, T, N, B, curvature, radius, base, throat, branchIdx };
+  const geom = { s, points: { x: px, y: py, z: pz }, T, N, B, curvature, radius, base, throat, branchIdx };
+  if (cad) Object.assign(geom, cadLesion(p, s, radius, base), { cad: true });
+  return geom;
+}
+
+/**
+ * Lesion of an imported lumen, for the expansion loss and the endpoints: the tightest point relative to the
+ * envelope (designed narrowing and/or the Occlusion slider on top), whether it is narrow enough to count
+ * (≥ 3% by diameter), and the span over which the loss is recovered and the lesion pressure drop is read.
+ */
+function cadLesion(p, s, radius, base) {
+  const n = s.length;
+  let iT = 0;
+  for (let i = 1; i < n; i++) if (radius[i] / base[i] < radius[iT] / base[iT]) iT = i;
+  const ratio = radius[iT] / base[iT], lesion = ratio < 0.97 || p.occlusionPct > 0;
+  // span: where the lumen is narrowed by more than 10% of the throat's narrowing
+  const thr = 1 - 0.1 * (1 - ratio);
+  let a = iT, b = iT;
+  while (a > 0 && radius[a - 1] / base[a - 1] < thr) a--;
+  while (b < n - 1 && radius[b + 1] / base[b + 1] < thr) b++;
+  return { throat: iT, lesion, throatRatio: ratio, lesionSpan: [s[a], s[b]], lossEnd: s[b] };
 }
 
 export function whiteCurvatureFactor(de) {
@@ -281,8 +338,8 @@ export function solveAtFlow(geom, p, q, pIn, opts = {}) {
   const { branchQ = null, branchR = null, pOut = 0 } = opts;
   const mu = p.mu, rho = p.rho, pExt = p.externalMmHg * MMHG;
   const eh = p.rigid ? Infinity : p.stiffnessKpa * 1e3 * p.wallMm * 1e-3;
-  const iT = geom.throat, baseRatio = (geom.base[iT] / geom.base[0]) ** 2, occ = p.occlusionPct > 0;
-  const sEnd = p.stenosisCenter * p.lengthMm * 1e-3 + (p.stenosisLengthMm / 2) * 1e-3;
+  const iT = geom.throat, baseRatio = (geom.base[iT] / geom.base[0]) ** 2, occ = geom.lesion ?? p.occlusionPct > 0;
+  const sEnd = geom.lossEnd ?? p.stenosisCenter * p.lengthMm * 1e-3 + (p.stenosisLengthMm / 2) * 1e-3;
   const ramp = new Float64Array(n);
   if (occ) for (let i = 0; i < n; i++) ramp[i] = Math.min(Math.max((s[i] - s[iT]) / Math.max(sEnd - s[iT], 1e-12), 0), 1);
   const at = new Map();
@@ -332,6 +389,8 @@ export function solveAtFlow(geom, p, q, pIn, opts = {}) {
 }
 
 export function referenceParams(p) {
+  // an imported design is compared with a straight, smooth tube of its inlet diameter and taper
+  if (p.geometry === "cad") return { ...p, geometry: "parametric", occlusionPct: 0, tortuosity: 1, bulbPct: 0, rigidSpan: null };
   return { ...p, occlusionPct: 0, tortuosity: 1, rigidSpan: null };
 }
 
@@ -503,11 +562,11 @@ function max(a) { let m = -Infinity; for (const v of a) m = Math.max(m, v); retu
 function min(a) { let m = Infinity; for (const v of a) m = Math.min(m, v); return m; }
 
 export function summarize(res) {
-  const p = res.params, n = res.radius.length, iT = p.occlusionPct > 0 ? res.geom.throat : argmin(res.radius);
+  const p = res.params, n = res.radius.length, lesion = res.geom.lesion ?? p.occlusionPct > 0, iT = lesion ? res.geom.throat : argmin(res.radius);
   const dIn = 2 * res.radius[0];
   const reIn = res.reynolds[0], reT = res.reynolds[iT], reMax = max(res.reynolds);
   const omega = (2 * Math.PI * p.heartRate) / 60, nu = p.mu / p.rho;
-  const tr = throatRatio(p), areaSten = 100 * (1 - tr * tr);
+  const tr = res.geom.cad ? res.geom.throatRatio : throatRatio(p), areaSten = 100 * (1 - tr * tr);
   const entrance = 0.05 * reIn * dIn;
   const warnings = [];
   const maxStrain = max(res.strain);
@@ -523,7 +582,7 @@ export function summarize(res) {
     D_inlet_mm: dIn * 1e3, D_throat_mm: 2e3 * res.radius[iT],
     Re_inlet: reIn, Re_throat: reT, Re_max: reMax,
     regime_inlet: flowRegime(reIn), regime_throat: flowRegime(reT), regime_max: flowRegime(reMax),
-    disturbance: p.occlusionPct > 0 && areaSten >= 50 && reIn >= RE_STENOTIC_DISTURBANCE,
+    disturbance: lesion && areaSten >= 50 && reIn >= RE_STENOTIC_DISTURBANCE,
     Dean_max: max(res.dean),
     Womersley: (dIn / 2) * Math.sqrt(omega / nu),
     entrance_mm: entrance * 1e3,
@@ -543,9 +602,10 @@ export function summarize(res) {
   out.Q_territory_mL_min = (res.qOut + (res.qColl ?? 0)) / MLMIN;
   out.Q_branches_mL_min = res.branchQ.reduce((a, b) => a + b, 0) / MLMIN;
   out.branch_mL_min = Array.from(res.branchQ, (b) => b / MLMIN);
-  if (p.occlusionPct > 0) {
+  if (lesion) {
     const sc = p.stenosisCenter * p.lengthMm * 1e-3, half = (p.stenosisLengthMm / 2) * 1e-3;
-    const pa = interp1(sc - half, res.geom.s, res.pressure), pb = interp1(sc + half, res.geom.s, res.pressure);
+    const [sa, sb] = res.geom.lesionSpan ?? [sc - half, sc + half];
+    const pa = interp1(sa, res.geom.s, res.pressure), pb = interp1(sb, res.geom.s, res.pressure);
     out.dP_lesion_mmHg = (pa - pb) / MMHG;
     out.Pd_Pa_lesion = pb / pa;
   }

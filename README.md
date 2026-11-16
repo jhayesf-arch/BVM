@@ -10,8 +10,8 @@ pressure, Reynolds number and distal perfusion.
 ## Interactive simulator (start here)
 
 A browser app in `app/`. Move the sliders and the 3D vessel, flow animation and every readout update
-instantly. A landing page asks for the model (Parametric, with an optional starting scenario, or
-Patient CTA); the toggle in the top bar still switches, and clicking the title returns to the landing
+instantly. A landing page asks for the model (Parametric, with an optional starting scenario or your
+own CAD design, or Patient CTA); the toggle in the top bar still switches, and clicking the title returns to the landing
 page. A shared link opens the app directly. There is no install and no build step: it needs only Python, to serve the files.
 
 ```bash
@@ -131,6 +131,44 @@ Notes and limits:
     (`app/data/patient/`, about 6.4 MB). Export gives that version's STL.
 * **Export:** STL (mm, with wall/inlet/outlet patches), CSV profiles, JSON, PNG, and a shareable link.
   The link encodes the current settings in the URL.
+
+### CAD import (test your own design)
+
+The **CAD import** tab in Parametric mode (or *Import a CAD design…* on the landing page) loads a
+vessel or vessel-mimic file, **STL, OBJ, STEP or IGES**, and runs the same model on its shape. Drag
+the file onto the tab or choose it; nothing is uploaded (it is processed in the browser).
+`app/cad.js` does the geometry:
+
+* **What it accepts.** A lumen (fluid-domain) solid, an open lumen surface, or a hollow vessel wall.
+  For a wall, the inner surface is taken as the lumen and the gap gives the wall thickness, which is
+  then used for distensibility. The ends are found as open rims or as flat end caps, so straight,
+  curved, S-shaped, helical and U-shaped vessels all work. STEP/IGES are tessellated by
+  [occt-import-js](https://github.com/kovacsv/occt-import-js) (OpenCascade), which is fetched from a
+  CDN the first time one is opened.
+* **Centerline and sections.** It marches from the inlet, slicing the mesh normal to the current
+  direction and stepping to the centroid of the lumen loop. It then smooths that path, re-slices
+  normal to it, and rebuilds the centerline from those perpendicular cuts. Each section becomes the
+  circle with the **same Poiseuille resistance** (Saint-Venant, R′ ∝ I_p/A⁴). That is exact for round
+  and elliptical lumens and within about 8% for a square. Curvature (for the Dean correction) comes
+  from the smoothed centerline.
+* **Units and direction.** Units are guessed from the end size (mm, cm or m) and can be changed. The
+  inlet is the larger end; tick *Reverse flow direction* to swap.
+* **Reference.** Flow % compares the design with a straight, smooth tube of the same length, inlet
+  diameter and taper, so built-in narrowings, bends and bulges show up as lost flow. A narrowing is
+  measured against the straight envelope between the end diameters and gets the Young–Tsai expansion
+  loss.
+* **What still applies.** Blood, the boundary condition, stiffness, tissue, pulsatility, perforators,
+  the Occlusion slider (as an extra lesion) and the device panel all apply. Devices act on the slider
+  lesion, not on a narrowing built into the file. The geometry sliders it replaces (diameter,
+  tortuosity, length, taper, bulb) are locked.
+* **Limits.** Only the main inlet-to-outlet path is followed, so side branches in the file are cut
+  off. The file stays local, so a shared link does not include the design.
+* **Verification.** The self-test (`app/selftest.html`) checks:
+  * lengths and diameters on straight, stenosed, tapered, bent, U-shaped, hollow-wall, open-ended
+    and elliptical tubes;
+  * units detection;
+  * a round trip: parametric vessel → triangulated surface → import. The round trip reproduces flow
+    within 0.5 percentage points, ΔP within 2% and peak WSS within 5%.
 
 ### Blood & oxygen
 
@@ -351,6 +389,9 @@ Baseline (straight, 3.0 mm, Q = 120 mL/min):
 * **Wall law.** The linear thin-wall law is only valid below about 10% strain. Soft hydrogel
   substrates (tens of kPa) exceed this, and the model warns when they do. Those cases need
   hyperelastic FSI.
+* **Imported CAD.** One centerline, circular-equivalent sections (Saint-Venant resistance), and no
+  branches from the file. Lumens with strongly non-convex sections (crescents, kinks) and secondary
+  flows are approximate; mesh the original file for 3D CFD.
 * **Territory model.** No autoregulation; collaterals and no-reflow are lumped resistances with
   assumed parameters. Pulsatility is a small-signal, quasi-steady layer on the mean solution (no
   wave reflection along the vessel, no Womersley profile); peak WSS phase and overshoot need 3D CFD. The ischemia bands

@@ -1,9 +1,10 @@
-import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, hemoglobin, interp1, oxygenContent, solve, throatRatio, validate } from "./model.js?v=202611151830";
-import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611151830";
-import { LineChart, fmt } from "./charts.js?v=202611151830";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611151830";
-import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611151830";
-import { PatientViewer, solvePatient } from "./patient.js?v=202611151830";
+import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, cadGeometry, hemoglobin, interp1, oxygenContent, setCadGeometry, solve, throatRatio, usesCad, validate } from "./model.js?v=202611152100";
+import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611152100";
+import { LineChart, fmt } from "./charts.js?v=202611152100";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611152100";
+import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611152100";
+import { PatientViewer, solvePatient } from "./patient.js?v=202611152100";
+import { UNIT_SCALE, extractLumen, guessUnits, readCadFile, toBinarySTL, toCanonical, tubeMesh, weld } from "./cad.js?v=202611152100";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -186,7 +187,9 @@ function makeControl(f, container, { primary = false, tag = "", hint = true } = 
     range.value = toSlider(f, params[f.key]);
     num.value = show(f, params[f.key]);
     // patient mode always uses the territory BC, so its tissue sliders stay live
-    const disabled = (f.key === "stiffnessKpa" && params.rigid) || (f.territoryOnly && params.bc === "fixed_flow" && !tag);
+    const disabled = (f.key === "stiffnessKpa" && params.rigid) || (f.territoryOnly && params.bc === "fixed_flow" && !tag) ||
+      (!tag && CAD_LOCKED.has(f.key) && usesCad(params));
+    if (!tag && CAD_LOCKED.has(f.key)) wrap.title = usesCad(params) ? "Set by the imported CAD geometry (CAD import tab)" : "";
     range.disabled = num.disabled = disabled;
     wrap.style.opacity = disabled ? 0.45 : 1;
   };
@@ -304,7 +307,9 @@ function rebuildControls() {
 function applySection(secId, srcId, extra = {}) {
   const sec = sectionById(secId);
   srcId = sec.sources.some((s) => s.id === srcId) ? srcId : sec.sources[0].id;
+  const keepCad = usesCad(params);
   params = clampParams({ ...DEFAULTS, bc: params.bc, lesion: params.lesion, ...sectionParams(sec, srcId), source: srcId, ...extra });
+  if (keepCad) params = clampParams({ ...params, ...cadParams(), ...pick(extra, ["occlusionPct", "stenosisLengthMm", "stenosisCenter", "lesion"]) });
   const dev = deviceById(deviceId);
   if (dev && dev.lesion !== params.lesion) { deviceId = null; panelOpen = false; }
   applySectionRanges(sec);
@@ -364,12 +369,15 @@ function compute() {
   let range = fieldRange(values, meta);
   if ($("#lock-scale").checked) { lockedRange ??= { field, range }; if (lockedRange.field === field) range = lockedRange.range; else lockedRange = { field, range }; }
   viewer.update(result, field, meta.cmap, range, { reframe: firstFrame || geometryChanged() });
+  const ghostKey = usesCad(params) && cad.ghost ? cad.key : null;
+  if (ghostKey !== viewer.ghostKey) { viewer.setGhost(ghostKey ? cad.canon : null); viewer.ghostKey = ghostKey; }
   firstFrame = false;
   viewer.setExtras(sceneExtras(dev));
   viewer.setProbe(probeFrac);
   renderDeviceBar(dev);
   renderDevicePanel(dev);
   renderAnatomy();
+  renderCad();
   updateRestoration(dev);
   renderEndpoints(dev);
   renderOxygen();
@@ -389,7 +397,7 @@ function compute() {
 let lastGeomKey = "";
 function geometryChanged() {
   // reframe the camera only when the overall shape changes a lot (length/tortuosity/bends)
-  const key = `${params.section}|${params.lengthMm}|${params.tortuosity > 1.0001}|${params.waves}`;
+  const key = `${params.section}|${params.lengthMm}|${params.tortuosity > 1.0001}|${params.waves}|${usesCad(params) ? cad.key : ""}`;
   const changed = key !== lastGeomKey;
   lastGeomKey = key;
   return changed;
@@ -703,7 +711,7 @@ function renderEndpoints(dev) {
   // flags
   const flags = [];
   const areaPost = treatment ? 100 * (1 - throatRatio(treatment.post) ** 2) : null;
-  if (params.occlusionPct > 0 && a.area_stenosis_pct >= 50)
+  if ((params.occlusionPct > 0 || pre.geom.lesion) && a.area_stenosis_pct >= 50)
     flags.push(["warn", `Before: a ${areaTxt(a.area_stenosis_pct)}%-area stenosis. Separation and recirculation (stagnation) are likely just downstream of the throat. Not resolved here; confirm with 3D CFD.`]);
   if (treatment && treatment.post.occlusionPct > 0 && areaPost >= 50)
     flags.push(["warn", `After: ${areaTxt(areaPost)}% area stenosis remains, so post-stenotic separation is still likely.`]);
@@ -997,7 +1005,7 @@ function syncSensOptions(dev) {
 }
 
 function fillSensSelects(keep = false) {
-  const xs = sensMode === "vessel" ? SENS_X : ASP_X;
+  const xs = sensMode === "vessel" ? SENS_X.filter((o) => !(usesCad(params) && CAD_LOCKED.has(o.key))) : ASP_X;
   const ys = sensMode === "vessel" ? SENS_Y.filter((o) => !o.post || deviceById(deviceId)) : ASP_Y;
   const oldX = $("#sens-x").value, oldY = $("#sens-y").value;
   $("#sens-x").innerHTML = xs.map((o) => `<option value="${o.key}">${o.label}</option>`).join("");
@@ -1127,7 +1135,9 @@ function readHash() {
 }
 function writeHash() {
   const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) if (k !== "rigidSpan" && v !== DEFAULTS[k]) q.set(k, typeof v === "boolean" ? (v ? "1" : "0") : String(+(+v).toPrecision(6) || v));
+  // an imported shape is not in the link (the file stays local), so neither are the values it sets
+  const fromCad = (k) => usesCad(params) && (CAD_LOCKED.has(k) || k === "wallMm");
+  for (const [k, v] of Object.entries(params)) if (k !== "rigidSpan" && k !== "geometry" && !fromCad(k) && v !== DEFAULTS[k]) q.set(k, typeof v === "boolean" ? (v ? "1" : "0") : String(+(+v).toPrecision(6) || v));
   if (deviceId) { q.set("device", deviceId); q.set("view", view); }
   if (geomMode === "patient") { q.set("geom", "patient"); q.set("lumen", ptVariant); q.set("ptcolor", ptColor); }
   history.replaceState(null, "", `${location.pathname}${location.search}${q.toString() ? `#${q}` : ""}`);
@@ -1187,11 +1197,13 @@ function buildExport() {
     const kind = e.target.dataset.export;
     if (!kind || !result) return;
     if (geomMode === "patient" && (await exportPatient(kind))) return;
-    const tag = `${params.section}_D${params.diameterMm}_TI${params.tortuosity}_occ${params.occlusionPct.toFixed(0)}_E${params.rigid ? "rigid" : Math.round(params.stiffnessKpa)}`;
+    const tag = usesCad(params) ? `${cad.name.replace(/\.[^.]+$/, "")}_occ${params.occlusionPct.toFixed(0)}_E${params.rigid ? "rigid" : Math.round(params.stiffnessKpa)}`
+      : `${params.section}_D${params.diameterMm}_TI${params.tortuosity}_occ${params.occlusionPct.toFixed(0)}_E${params.rigid ? "rigid" : Math.round(params.stiffnessKpa)}`;
     if (kind === "stl") download(`${tag}.stl`, stl(), "model/stl");
     if (kind === "csv") download(`${tag}_profiles.csv`, csv(), "text/csv");
     if (kind === "json") download(`${tag}.json`, JSON.stringify({
       inputs: params, view, results: result.summary,
+      cad_import: usesCad(params) ? { file: cad.name, units: cad.units, reversed: cad.reverse, ...cad.stats } : null,
       device: treatment ? { id: deviceId, name: deviceById(deviceId).name, size: treatment.size.label, options: deviceOpts,
         checks: treatment.checks, metrics: treatment.metrics, before: pre.summary, after: post.summary } : null,
       endpoints: { treated_span_mm: treatedSpan(), before: spanMetrics(pre, treatedSpan() ?? [0, params.lengthMm]),
@@ -1369,6 +1381,124 @@ function wirePatient() {
   $("#pt-oxygen")?.addEventListener("click", (e) => { const r = e.target.closest("tr[data-key]"); if (r) { ptVariant = r.dataset.key; renderPatient(); } });
 }
 
+// ───────────────────────── CAD import ─────────────────────────
+// Geometry sliders that the imported shape replaces (they still hold its inlet diameter, length and taper).
+const CAD_LOCKED = new Set(["diameterMm", "tortuosity", "waves", "lengthMm", "taper", "bulbPct", "bulbCenter", "bulbLengthMm"]);
+const cad = { key: null, name: "", units: "mm", reverse: false, ghost: true, mesh: null, tri: null, canon: null, ext: null, stats: null };
+const pick = (o, keys) => Object.fromEntries(keys.filter((k) => k in o).map((k) => [k, o[k]]));
+
+function openSideTab(name) { document.querySelector(`.side-tabs button[data-side="${name}"]`)?.click(); }
+
+/** Model inputs that come from the imported shape. */
+function cadParams() {
+  const g = cadGeometry(), n = g.r.length, dIn = 2e3 * g.r[0], dOut = 2e3 * g.r[n - 1];
+  const out = { geometry: "cad", lengthMm: g.s[n - 1] * 1e3, diameterMm: dIn, taper: Math.min(Math.max(dOut / dIn, 0.2), 2),
+    tortuosity: 1, bulbPct: 0 };
+  if (cad.ext.wallMm) out.wallMm = +cad.ext.wallMm.toFixed(3);
+  return out;
+}
+
+function cadStatus(text, err = false) {
+  const el = $("#cad-status");
+  el.hidden = !text;
+  el.textContent = text ?? "";
+  el.classList.toggle("err", err);
+}
+
+async function loadCad(file) {
+  cadStatus(`Reading ${file.name}…`);
+  try {
+    const tri = file.tri ?? (await readCadFile(file));
+    cadStatus(`Finding the centerline of ${(tri.length / 9).toLocaleString()} triangles…`);
+    await new Promise((r) => setTimeout(r, 20));          // let the status paint before the slicing work
+    const mesh = weld(tri);
+    Object.assign(cad, { name: file.name, tri, mesh, units: guessUnits(mesh), reverse: false });
+    $("#cad-units").value = cad.units;
+    $("#cad-reverse").checked = false;
+    extractCad(true);
+    cadStatus("");
+  } catch (e) {
+    cadStatus(`Could not import ${file.name}: ${e.message}`, true);
+  }
+}
+
+/** (Re)build the centerline from the loaded mesh with the current units and direction, then re-solve. */
+function extractCad(fresh = false) {
+  const t0 = performance.now();
+  const ext = extractLumen(cad.mesh, { scale: UNIT_SCALE[cad.units], reverse: cad.reverse });
+  cad.ext = ext;
+  cad.canon = toCanonical(cad.tri, ext.frame);
+  cad.key = `${cad.name}|${cad.units}|${cad.reverse}|${Math.random()}`;
+  setCadGeometry({ s: ext.s, x: ext.x, y: ext.y, z: ext.z, r: ext.r });
+  const n = ext.r.length, D = ext.r.map((r) => 2e3 * r);
+  let iMin = 0;
+  for (let i = 1; i < n; i++) if (D[i] < D[iMin]) iMin = i;
+  cad.stats = { length_mm: ext.s[n - 1] * 1e3, inlet_diameter_mm: D[0], outlet_diameter_mm: D[n - 1], min_diameter_mm: D[iMin],
+    min_at_mm: ext.s[iMin] * 1e3, tortuosity: ext.tortuosity, wall_mm: ext.wallMm, triangles: cad.tri.length / 9,
+    min_circularity: Math.min(...ext.circularity), seconds: (performance.now() - t0) / 1e3 };
+  const extra = fresh ? { occlusionPct: 0, nBranches: 0 } : {};
+  params = clampParams({ ...params, ...extra, ...cadParams() });
+  lockedRange = null;
+  if (fresh) $("#preset").value = "";
+  syncControls();
+  fillSensSelects(true);
+  schedule();
+  renderCad();
+}
+
+function clearCad() {
+  setCadGeometry(null);
+  Object.assign(cad, { key: null, mesh: null, tri: null, canon: null, ext: null, stats: null });
+  applySection(params.section, params.source);        // restore the section's own healthy shape
+  fillSensSelects(true);
+  renderCad();
+}
+
+function renderCad() {
+  const on = usesCad(params), st = cad.stats;
+  $("#side-cad").textContent = on ? "loaded" : "none";
+  $("#cad-loaded").hidden = !on;
+  if (!on) return;
+  $("#cad-name").textContent = cad.name;
+  const g = pre?.geom, dsGeom = g?.cad ? 100 * (1 - g.throatRatio) : null;
+  const f = (v, d = 2) => (v == null ? "—" : (+v.toFixed(d)).toLocaleString());
+  const rows = [
+    ["Centerline length", `${f(st.length_mm, 1)} mm`],
+    ["Inlet → outlet diameter", `${f(st.inlet_diameter_mm)} → ${f(st.outlet_diameter_mm)} mm`, "Circles of equal Poiseuille resistance at the two ends. The inlet is the larger end unless reversed."],
+    ["Narrowest lumen", `${f(st.min_diameter_mm)} mm at ${f(st.min_at_mm, 1)} mm`, `Resistance-equivalent diameter. The equal-area diameter there is ${f(cad.ext.minAreaDiameterMm)} mm.`],
+    ["Narrowing", dsGeom != null && dsGeom >= 3 ? `${f(dsGeom, 0)}% diameter · ${f(100 * (1 - (1 - dsGeom / 100) ** 2), 0)}% area` : "none",
+      "Tightest point relative to the smooth envelope between the end diameters (Occlusion slider included)."],
+    ["Tortuosity (length ÷ end-to-end)", f(st.tortuosity, 3)],
+    ["Wall thickness", st.wall_mm ? `${f(st.wall_mm, 3)} mm` : "not in file", st.wall_mm ? "Measured between the inner and outer surfaces; used for wall distensibility." : "Lumen-only surface: set the wall under Anatomy → Shape."],
+    ["Cross-section roundness (min)", f(st.min_circularity, 2), "4πA/P²: 1 is a circle, 0.79 a square."],
+    ["Mesh", `${st.triangles.toLocaleString()} triangles`, `${cad.ext.open ? "Open ends" : "Closed solid"}; processed in ${f(st.seconds, 1)} s.`],
+  ];
+  $("#cad-table").innerHTML = rows.map(([k, v, why]) => `<tr><td>${k}${why ? `<span class="why">${esc(why)}</span>` : ""}</td><td class="v">${v}</td></tr>`).join("");
+  $("#cad-warn").innerHTML = cad.ext.warnings.map((w) => `<li>${esc(w)}</li>`).join("");
+}
+
+// Example design: a 3.5 mm tube with one bend and a 60% (diameter) eccentric narrowing, in mm.
+function exampleTri() {
+  const bump = (u) => (Math.abs(u - 0.55) < 0.12 ? 0.5 * (1 + Math.cos((Math.PI * (u - 0.55)) / 0.12)) : 0);
+  return tubeMesh((u) => [6 * (1 - Math.cos(1.2 * u)) + 0.4 * bump(u), 0, 22 * u], (u) => (1.75 - 0.25 * u) * (1 - 0.6 * bump(u)), { nu: 320, nt: 48 });
+}
+
+function wireCad() {
+  const input = $("#cad-file"), drop = $("#cad-drop");
+  if (!input || !drop) return;
+  $("#cad-pick").addEventListener("click", () => input.click());
+  input.addEventListener("change", () => { if (input.files[0]) loadCad(input.files[0]); input.value = ""; });
+  for (const ev of ["dragenter", "dragover"]) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); });
+  for (const ev of ["dragleave", "drop"]) drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); });
+  drop.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) loadCad(f); });
+  $("#cad-example").addEventListener("click", (e) => { e.preventDefault(); loadCad({ name: "example_bend_60pct.stl", tri: exampleTri() }); });
+  $("#cad-example-dl").addEventListener("click", (e) => { e.preventDefault(); download("example_bend_60pct_mm.stl", toBinarySTL(exampleTri()), "model/stl"); });
+  $("#cad-units").addEventListener("change", (e) => { cad.units = e.target.value; extractCad(); });
+  $("#cad-reverse").addEventListener("change", (e) => { cad.reverse = e.target.checked; extractCad(); });
+  $("#cad-ghost").addEventListener("change", (e) => { cad.ghost = e.target.checked; schedule(); });
+  $("#cad-clear").addEventListener("click", clearCad);
+}
+
 // ───────────────────────── wiring ─────────────────────────
 function wireDisplay() {
   $("#field").addEventListener("change", () => { lockedRange = null; schedule(); });
@@ -1396,6 +1526,7 @@ buildExport();
 wireDisplay();
 wireDevices();
 wirePatient();
+wireCad();
 syncControls();
 compute();
 setGeomMode(geomMode);
@@ -1409,7 +1540,11 @@ function wireLanding() {
   lsel.innerHTML = $("#preset").innerHTML.replace(">Custom<", ">Current settings<");
   const open = () => { lsel.value = ""; landing.hidden = false; landing.querySelector(`button[data-landing="${geomMode}"]`)?.focus(); };
   const close = () => { landing.hidden = true; };
-  const enter = (mode) => { close(); if (mode !== geomMode) setGeomMode(mode); };
+  const enter = (mode) => {
+    close();
+    if (mode === "cad") { $("#cad-file")?.click(); openSideTab("cad"); mode = "parametric"; }
+    if (mode !== geomMode) setGeomMode(mode);
+  };
   $("#landing-cards").addEventListener("click", (e) => { const b = e.target.closest("button[data-landing]"); if (b) enter(b.dataset.landing); });
   lsel.addEventListener("change", () => {
     if (lsel.value === "") return;
