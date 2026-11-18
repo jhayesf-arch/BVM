@@ -132,6 +132,38 @@ Notes and limits:
 * **Export:** STL (mm, with wall/inlet/outlet patches), CSV profiles, JSON, PNG, and a shareable link.
   The link encodes the current settings in the URL.
 
+### Custom shape (Pathology tab, under Tortuosity)
+
+*Customize shape* opens two small drag-to-edit curves.
+
+* **Lumen diameter.** The diameter along the vessel, as a % of the healthy diameter that the sliders set.
+* **Centerline.** The centerline seen from above, as a sideways offset in mm. This replaces the
+  tortuosity sine; the arc length stays at the Length slider, and the resulting tortuosity is shown.
+
+How to edit: drag points, double-click the curve to add a point, double-click a point to remove it.
+Presets: aneurysm, long narrowing, tandem stenoses, and C-bend, S-bend and kink centerlines. The
+curves are monotone cubics through the points, so there is no overshoot. They are saved in the
+shareable link.
+
+* **Lesion.** A narrowing you draw is the lesion: it is measured against the healthy shape and gets
+  the Young–Tsai loss. The Occlusion slider can still add one on top.
+* **Reference.** Flow % keeps the straight, uniform vessel as its reference.
+
+### Devices on drawn and imported lesions
+
+With a custom shape or an imported CAD design, the device panel reads the lesion from the geometry
+(`geometricLesion` in `app/model.js`):
+
+* **What it measures.** The tightest point relative to the healthy envelope: its diameter stenosis,
+  its span, and the healthy diameter there.
+* **Sizing and checks.** Devices are sized and checked against that lesion.
+* **Outcome.** The device's outcome (its post-treatment diameter stenosis) is applied back by scaling
+  the depth of the whole narrowing (`lesionTreat`). A successful thrombectomy restores the healthy
+  lumen, and a failed pass leaves it as it was.
+* **Stent.** A stent also makes its span rigid.
+
+In plain parametric mode this is exactly the previous slider-based logic.
+
 ### CAD import (test your own design)
 
 The **CAD import** tab in Parametric mode (or *Import a CAD design…* on the landing page) loads a
@@ -158,8 +190,8 @@ the file onto the tab or choose it; nothing is uploaded (it is processed in the 
   measured against the straight envelope between the end diameters and gets the Young–Tsai expansion
   loss.
 * **What still applies.** Blood, the boundary condition, stiffness, tissue, pulsatility, perforators,
-  the Occlusion slider (as an extra lesion) and the device panel all apply. Devices act on the slider
-  lesion, not on a narrowing built into the file. The geometry sliders it replaces (diameter,
+  the Occlusion slider (as an extra lesion) and the device panel all apply. Devices treat the tightest
+  narrowing in the geometry, whether it is built into the file or added with the slider. The geometry sliders it replaces (diameter,
   tortuosity, length, taper, bulb) are locked.
 * **Limits.** Only the main inlet-to-outlet path is followed, so side branches in the file are cut
   off. The file stays local, so a shared link does not include the design.

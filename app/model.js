@@ -63,6 +63,11 @@ export const DEFAULTS = Object.freeze({
   // pulsatility (bvm/pulsatile.py): healthy inlet Gosling PI and the territory bed's time constant R·C
   pulsatilityIndex: 0.9,
   tauS: 0.2,
+  // custom shape (shape editor, JS only): control points "u:v,u:v,…" along the vessel (u = 0 inlet … 1 outlet).
+  // shapeD: diameter as a fraction of the healthy diameter; shapeX: sideways centerline offset as a fraction of
+  // the length (replaces the tortuosity sine when set). Empty = not used.
+  shapeD: "",
+  shapeX: "",
 });
 
 // Carreau blood (Cho & Kensey 1991) as a factor on the high-shear viscosity; mirrors bvm.hemodynamics
@@ -142,6 +147,7 @@ export function validate(p) {
   if (!((p.collateralPct ?? 0) >= 0 && (p.collateralPct ?? 0) < 100)) errs.push("Collateral supply must be in [0, 100)%.");
   if (!((p.noReflowPct ?? 0) >= 0 && (p.noReflowPct ?? 0) < 100)) errs.push("No-reflow must be in [0, 100)%.");
   if (!((p.pulsatilityIndex ?? 0.9) >= 0 && (p.pulsatilityIndex ?? 0.9) <= 2) || !((p.tauS ?? 0.2) > 0)) errs.push("Pulsatility index must be in [0, 2] and τ > 0.");
+  if (p.shapeD && parseShape(p.shapeD)?.some(([, v]) => !(v > 0 && v <= 3))) errs.push("Custom diameters must be between 0 and 300% of healthy.");
   if (p.inletDropMmHg < 0 || p.inletMmHg - p.inletDropMmHg <= p.outflowMmHg)
     errs.push("The upstream pressure drop leaves no driving pressure.");
   return errs;
@@ -211,14 +217,63 @@ function cadBase(r) {
   return out;
 }
 
+// ---------- custom shape (shape editor) ----------
+/** Parse "u:v,u:v" into sorted [[u, v]] (null when empty or unusable). */
+export function parseShape(str) {
+  if (!str) return null;
+  const pts = String(str).split(",").map((t) => t.split(":").map(Number)).filter((q) => q.length === 2 && q.every(isFinite))
+    .map(([u, v]) => [Math.min(Math.max(u, 0), 1), v]).sort((a, b) => a[0] - b[0]);
+  return pts.length >= 2 ? pts : null;
+}
+export const formatShape = (pts) => pts.map(([u, v]) => `${+u.toFixed(3)}:${+v.toFixed(3)}`).join(",");
+/** A diameter profile that is 1 everywhere, or a centerline with no offset, is the same as none. */
+export const shapeActive = (str, flat) => { const q = parseShape(str); return !!q && q.some(([, v]) => Math.abs(v - flat) > 1e-9); };
+export const usesShape = (p) => !usesCad(p) && (shapeActive(p.shapeD, 1) || shapeActive(p.shapeX, 0));
+/** Lesion is read from the built geometry (imported design or custom shape) rather than from the sliders. */
+export const geometricMode = (p) => usesCad(p) || usesShape(p);
+
+/** Monotone cubic (Fritsch–Carlson) through the control points: smooth, no overshoot. Returns f(u). */
+export function shapeCurve(pts) {
+  const n = pts.length, x = pts.map((q) => q[0]), y = pts.map((q) => q[1]);
+  const d = [], m = new Array(n).fill(0);
+  for (let i = 0; i < n - 1; i++) d.push((y[i + 1] - y[i]) / Math.max(x[i + 1] - x[i], 1e-9));
+  m[0] = d[0]; m[n - 1] = d[n - 2];
+  for (let i = 1; i < n - 1; i++) if (d[i - 1] * d[i] > 0) { const w1 = 2 * (x[i + 1] - x[i]) + (x[i] - x[i - 1]), w2 = (x[i + 1] - x[i]) + 2 * (x[i] - x[i - 1]); m[i] = (w1 + w2) / (w1 / d[i - 1] + w2 / d[i]); }
+  return (u) => {
+    if (u <= x[0]) return y[0];
+    if (u >= x[n - 1]) return y[n - 1];
+    let k = 0;
+    while (k < n - 2 && u > x[k + 1]) k++;
+    const hk = x[k + 1] - x[k], t = (u - x[k]) / hk, t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * y[k] + (t3 - 2 * t2 + t) * hk * m[k] + (-2 * t3 + 3 * t2) * y[k + 1] + (t3 - t2) * hk * m[k + 1];
+  };
+}
+
+/** Dense centerline for shapeX: offsets x(u)·L sideways, chord found so the arc length is L. */
+function shapeCenterline(p, L) {
+  const f = shapeCurve(parseShape(p.shapeX)), N = 4000, u = linspace(0, 1, N), xd = Float64Array.from(u, (v) => f(v) * L);
+  const arc = (c) => { let a = 0; for (let i = 1; i < N; i++) a += Math.hypot(xd[i] - xd[i - 1], c * (u[i] - u[i - 1])); return a; };
+  if (arc(0) >= L * 0.999) throw new Error("The custom centerline bends more than the vessel length allows. Reduce the sideways offsets or lengthen the vessel.");
+  const chord = bisect((c) => arc(c) - L, 0, L);
+  const zd = Float64Array.from(u, (v) => v * chord), sd = new Float64Array(N);
+  for (let i = 1; i < N; i++) sd[i] = sd[i - 1] + Math.hypot(xd[i] - xd[i - 1], zd[i] - zd[i - 1]);
+  const k = L / sd[N - 1];
+  for (let i = 0; i < N; i++) sd[i] *= k;
+  return { sd, xd, zd, chord };
+}
+
 // ---------- geometry ----------
 export function buildGeometry(p, n = 401) {
   const cad = usesCad(p);
   const L = cad ? CAD.L : p.lengthMm * 1e-3;
   const s = linspace(0, L, n);
   const px = new Float64Array(n), py = new Float64Array(n), pz = new Float64Array(n);
+  const shapeX = !cad && shapeActive(p.shapeX, 0), shapeD = !cad && shapeActive(p.shapeD, 1);
   if (cad) {
     px.set(interp(s, CAD.s, CAD.x)); py.set(interp(s, CAD.s, CAD.y)); pz.set(interp(s, CAD.s, CAD.z));
+  } else if (shapeX) {
+    const c = shapeCenterline(p, L);
+    px.set(interp(s, c.sd, c.xd)); pz.set(interp(s, c.sd, c.zd));
   } else if (p.tortuosity <= 1 + 1e-9) {
     pz.set(s);
   } else {
@@ -283,6 +338,7 @@ export function buildGeometry(p, n = 401) {
   const bump = (si, c, half) => { const xi = (si - c) / half; return Math.abs(xi) < 1 ? 0.5 * (1 + Math.cos(Math.PI * xi)) : 0; };
   const depth = p.occlusionPct > 0 ? 1 - throatRatio(p) : 0;
   const cadR = cad ? interp(s, CAD.s, CAD.r) : null, cadB = cad ? cadBase(cadR) : null;
+  const prof = shapeD ? shapeCurve(parseShape(p.shapeD)) : null;
   for (let i = 0; i < n; i++) {
     let r;
     if (cad) { r = cadR[i]; base[i] = cadB[i]; }
@@ -290,9 +346,11 @@ export function buildGeometry(p, n = 401) {
       r = r0 * (1 + ((p.taper ?? 1) - 1) * (s[i] / L));
       if (p.bulbPct > 0) r *= 1 + (p.bulbPct / 100) * bump(s[i], p.bulbCenter * L, (p.bulbLengthMm / 2) * 1e-3);
       base[i] = r;
+      if (prof) r *= Math.max(prof(s[i] / L), 0.02);    // custom profile is drawn relative to the healthy shape
     }
     radius[i] = depth ? r * (1 - depth * bump(s[i], p.stenosisCenter * L, (p.stenosisLengthMm / 2) * 1e-3)) : r;
   }
+  if ((cad || shapeX || shapeD) && p.lesionTreat != null) treatLesion(s, radius, base, p.lesionTreat);
   let throat = 0;
   for (let i = 1; i < n; i++) {
     if (depth ? radius[i] / base[i] < radius[throat] / base[throat] : radius[i] < radius[throat]) throat = i;
@@ -303,8 +361,44 @@ export function buildGeometry(p, n = 401) {
     branchIdx.push(Math.min(Math.max(Math.floor(frac * (n - 1) + 0.5), 1), n - 2));
   }
   const geom = { s, points: { x: px, y: py, z: pz }, T, N, B, curvature, radius, base, throat, branchIdx };
-  if (cad) Object.assign(geom, cadLesion(p, s, radius, base), { cad: true });
+  if (cad || shapeX || shapeD) Object.assign(geom, cadLesion(p, s, radius, base), { cad: true, imported: cad, chord: Math.hypot(px[n - 1] - px[0], py[n - 1] - py[0], pz[n - 1] - pz[0]) });
   return geom;
+}
+
+/**
+ * A device acting on a lesion read from the geometry: the narrowing around the tightest point (where it is
+ * contiguous with it) is scaled so that its depth becomes `scale` × the original.
+ * scale 0 restores the healthy lumen; the shape of a residual narrowing is kept.
+ */
+function treatLesion(s, radius, base, scale) {
+  const n = s.length;
+  let iT = 0;
+  for (let i = 1; i < n; i++) if (radius[i] / base[i] < radius[iT] / base[iT]) iT = i;
+  const dT = 1 - radius[iT] / base[iT];
+  if (!(dT > 1e-6)) return;
+  const deep = (i) => 1 - radius[i] / base[i] > 1e-4 * dT;      // the whole contiguous narrowing
+  let a = iT, b = iT;
+  while (a > 0 && deep(a - 1)) a--;
+  while (b < n - 1 && deep(b + 1)) b++;
+  for (let i = a; i <= b; i++) radius[i] = base[i] - (base[i] - radius[i]) * scale;
+}
+
+/**
+ * The lesion as the device logic sees it, for a geometry whose narrowing is not just the Occlusion slider
+ * (an imported design or a custom shape): diameter stenosis at the tightest point relative to the healthy
+ * envelope, its span, and the healthy diameter there. Returns slider-style params, or null in plain
+ * parametric mode (where the sliders already describe the lesion).
+ */
+export function geometricLesion(p) {
+  if (!geometricMode(p)) return null;
+  const g = buildGeometry({ ...p, lesionTreat: null }), L = g.s[g.s.length - 1];
+  if (!g.lesion) return { occlusionPct: 0, basis: "diameter" };
+  const [a, b] = g.lesionSpan, len = Math.max(b - a, 1e-3);
+  return {
+    occlusionPct: 100 * (1 - g.throatRatio), basis: "diameter",
+    stenosisCenter: Math.min(Math.max((a + b) / 2 / L, 0.01), 0.99), stenosisLengthMm: len * 1e3,
+    diameterMm: 2e3 * g.base[g.throat], lengthMm: L * 1e3,
+  };
 }
 
 /**
@@ -390,7 +484,8 @@ export function solveAtFlow(geom, p, q, pIn, opts = {}) {
 
 export function referenceParams(p) {
   // an imported design is compared with a straight, smooth tube of its inlet diameter and taper
-  if (p.geometry === "cad") return { ...p, geometry: "parametric", occlusionPct: 0, tortuosity: 1, bulbPct: 0, rigidSpan: null };
+  if (p.geometry === "cad") return { ...p, geometry: "parametric", occlusionPct: 0, tortuosity: 1, bulbPct: 0, rigidSpan: null, shapeD: "", shapeX: "", lesionTreat: null };
+  if (usesShape(p)) return { ...p, occlusionPct: 0, tortuosity: 1, rigidSpan: null, shapeD: "", shapeX: "", lesionTreat: null };
   return { ...p, occlusionPct: 0, tortuosity: 1, rigidSpan: null };
 }
 

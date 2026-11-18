@@ -1,8 +1,8 @@
 // Browser self-test for the JS engine and device logic (verification evidence; see
 // docs/credibility-assessment-plan.md). Open app/selftest.html locally or on the live site.
-import * as M from "./model.js?v=202611152100";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, defaultOptions, treat } from "./devices.js?v=202611152100";
-import * as C from "./cad.js?v=202611152100";
+import * as M from "./model.js?v=202611171230";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, applyDevice, defaultOptions, treat } from "./devices.js?v=202611171230";
+import * as C from "./cad.js?v=202611171230";
 
 export function runSelfTest() {
   const results = [];
@@ -150,6 +150,48 @@ export function runSelfTest() {
       } finally { M.setCadGeometry(null); }
     }
     chk(!M.usesCad({ ...M.DEFAULTS, geometry: "cad" }), "cleared CAD geometry falls back to the parametric vessel");
+  }
+
+  // ── custom shape (shape editor) and devices acting on a lesion read from the geometry ──
+  const sg = group("Custom shape and devices on drawn or imported lesions");
+  {
+    const chk = (ok, msg) => { sg.cases++; if (!ok) sg.fails.push(msg); };
+    const P = { ...M.DEFAULTS, nBranches: 0 };
+    const sl = M.solve({ ...P, occlusionPct: 60 }).summary, sh = M.solve({ ...P, shapeD: "0:1,0.35:1,0.5:0.4,0.65:1,1:1" }).summary;
+    chk(Math.abs(sh.diameter_stenosis_pct - 60) < 0.1 && Math.abs(sh.flow_fraction - sl.flow_fraction) < 0.005,
+      `drawn 60% narrowing ${sh.diameter_stenosis_pct}% / flow ${sh.flow_fraction} vs slider ${sl.flow_fraction}`);
+    chk(JSON.stringify(M.solve({ ...P, shapeD: "0:1,1:1", shapeX: "0:0,1:0" }).summary) === JSON.stringify(M.solve(P).summary), "a flat shape equals no shape");
+    for (const x of ["0:0,0.5:0.2,1:0", "0:0,0.25:0.12,0.75:-0.12,1:0"]) {
+      const r = M.solve({ ...P, shapeX: x });
+      chk(near(r.geom.s.at(-1), 0.02, 1e-12) && r.geom.s.at(-1) / r.geom.chord > 1.02 && !r.geom.lesion && r.summary.flow_fraction < 1,
+        `drawn centerline ${x}: length ${r.geom.s.at(-1)}, tortuosity ${r.geom.s.at(-1) / r.geom.chord}`);
+    }
+    let threw = false;
+    try { M.solve({ ...P, shapeX: "0:0,0.1:0.3,0.2:-0.3,0.3:0.3,0.4:-0.3,0.5:0.3,0.6:-0.3,1:0" }); } catch { threw = true; }
+    chk(threw, "a centerline longer than the vessel must be rejected");
+    const stent = DEVICES.find((d) => d.stent), ret = DEVICES.find((d) => d.category.startsWith("Stent retriever")), bal = DEVICES.find((d) => d.balloon);
+    const p0 = { ...M.DEFAULTS, occlusionPct: 75 };
+    chk(JSON.stringify(applyDevice(stent, p0, defaultOptions(stent)).post) === JSON.stringify(treat(stent, p0, defaultOptions(stent)).post), "slider lesion: applyDevice = treat");
+    const ps = { ...P, shapeD: "0:1,0.35:1,0.5:0.25,0.65:1,1:1" };
+    for (const dev of [stent, bal]) {
+      const t = applyDevice(dev, ps, defaultOptions(dev)), b = M.solve(t.post).summary, a = M.solve(ps).summary;
+      chk(Math.abs(t.lesionPre.occlusionPct - 75) < 0.1 && Math.abs(b.diameter_stenosis_pct - t.lesionPost.occlusionPct) < 0.1 && b.flow_fraction > a.flow_fraction,
+        `${dev.name} on a drawn lesion: ${t.lesionPre.occlusionPct}% → ${b.diameter_stenosis_pct}% (planned ${t.lesionPost.occlusionPct}%)`);
+    }
+    const pt = { ...ps, lesion: "thrombus" };
+    const ok = M.solve(applyDevice(ret, pt, { ...defaultOptions(ret), success: true }).post), bad = M.solve(applyDevice(ret, pt, { ...defaultOptions(ret), success: false }).post);
+    chk(!ok.geom.lesion && near(ok.summary.flow_fraction, 1, 1e-6), `successful pass on a drawn clot leaves DS ${ok.summary.diameter_stenosis_pct}%`);
+    chk(near(bad.summary.flow_fraction, M.solve(pt).summary.flow_fraction, 1e-12), "failed pass leaves the drawn clot");
+    // imported design: the device treats the narrowing in the file
+    const tri = C.tubeMesh((u) => [0, 0, 20 * u], (u) => 1.5 * (1 - 0.7 * (Math.abs(u - 0.5) < 0.15 ? 0.5 * (1 + Math.cos((Math.PI * (u - 0.5)) / 0.15)) : 0)), { nu: 300 });
+    const e = C.extractLumen(C.weld(tri), { scale: 1e-3 });
+    M.setCadGeometry(e);
+    try {
+      const pc = { ...P, geometry: "cad", lengthMm: 20, diameterMm: 2e3 * e.r[0], taper: 1 };
+      const t = applyDevice(stent, pc, defaultOptions(stent)), b = M.solve(t.post).summary, a = M.solve(pc).summary;
+      chk(Math.abs(t.lesionPre.occlusionPct - 70) < 1 && Math.abs(b.diameter_stenosis_pct - t.lesionPost.occlusionPct) < 0.2 && b.flow_fraction > a.flow_fraction + 0.2,
+        `stent on an imported 70% narrowing: ${t.lesionPre.occlusionPct}% → ${b.diameter_stenosis_pct}%, flow ${a.flow_fraction} → ${b.flow_fraction}`);
+    } finally { M.setCadGeometry(null); }
   }
 
   // ── engine: robustness across a parameter grid (both grids the app uses) ──

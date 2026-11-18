@@ -5,6 +5,8 @@
 // listed exactly as published on each manufacturer's virtual patent-marking page; where the
 // page did not list the product, we say so instead of guessing.
 
+import { geometricLesion } from "./model.js?v=202611171230";
+
 const GP = (n) => `https://patents.google.com/patent/US${n.replace(/,/g, "")}`;
 const INCH = 25.4;
 
@@ -277,4 +279,20 @@ export function treat(dev, p, opts) {
     post = opts.success ? { ...post, occlusionPct: Math.min(preDS, opts.residualPct), basis: "diameter" } : { ...p };
   }
   return { size, sizeIdx, post, overlay, checks, metrics };
+}
+
+/**
+ * treat() for any geometry. In plain parametric mode the sliders describe the lesion, so this is treat().
+ * For an imported design or a custom shape, the lesion is read from the geometry (geometricLesion): the device
+ * is sized and checked against it, and its outcome (the post-treatment diameter stenosis) is applied back to
+ * the geometry by scaling the narrowing's depth (p.lesionTreat), with the stented span made rigid as usual.
+ * lesionPre / lesionPost are the slider-style descriptions of the lesion before and after, for the UI.
+ */
+export function applyDevice(dev, p, opts) {
+  const les = geometricLesion(p);
+  if (!les) { const t = treat(dev, p, opts); return { ...t, lesionPre: p, lesionPost: t.post }; }
+  const pT = { ...p, ...les, rigidSpan: null }, t = treat(dev, pT, opts);
+  const scale = les.occlusionPct > 0 ? Math.min(Math.max(t.post.occlusionPct / les.occlusionPct, 0), 1) : 1;
+  const post = { ...p, rigidSpan: t.post.rigidSpan ?? null, lesionTreat: scale < 1 - 1e-12 ? scale : null };
+  return { ...t, post, lesionPre: pT, lesionPost: { ...t.post } };
 }
