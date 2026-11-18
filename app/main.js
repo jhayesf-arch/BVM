@@ -1,10 +1,10 @@
-import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, cadGeometry, hemoglobin, interp1, oxygenContent, setCadGeometry, solve, throatRatio, usesCad, validate } from "./model.js?v=202611152100";
-import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611152100";
-import { LineChart, fmt } from "./charts.js?v=202611152100";
-import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, deviceById, defaultOptions, patentUrl, treat } from "./devices.js?v=202611152100";
-import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611152100";
-import { PatientViewer, solvePatient } from "./patient.js?v=202611152100";
-import { UNIT_SCALE, extractLumen, guessUnits, readCadFile, toBinarySTL, toCanonical, tubeMesh, weld } from "./cad.js?v=202611152100";
+import { DEFAULTS, HIGH_WSS_PA, LOW_WSS_PA, MMHG, RE_LAMINAR_MAX, RE_TURBULENT_MIN, bloodFactors, cadGeometry, formatShape, geometricLesion, hemoglobin, parseShape, shapeActive, shapeCurve, usesShape, interp1, oxygenContent, setCadGeometry, solve, throatRatio, usesCad, validate } from "./model.js?v=202611171230";
+import { Viewer, cssGradient, SLOW_MOTION } from "./viewer.js?v=202611171230";
+import { LineChart, fmt } from "./charts.js?v=202611171230";
+import { ASPIRATION_DEFAULTS, DEVICES, aspirationEstimate, applyDevice, deviceById, defaultOptions, patentUrl } from "./devices.js?v=202611171230";
+import { REFS, SECTIONS, sectionBasis, sectionById, sectionParams } from "./anatomy.js?v=202611171230";
+import { PatientViewer, solvePatient } from "./patient.js?v=202611171230";
+import { UNIT_SCALE, extractLumen, guessUnits, readCadFile, toBinarySTL, toCanonical, tubeMesh, weld } from "./cad.js?v=202611171230";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -159,6 +159,8 @@ let deviceOpts = defaultOptions(deviceById(deviceId));
 let view = ["before", "inplace", "after"].includes(hashExtras.get("view")) ? hashExtras.get("view") : "after";
 let panelOpen = false;
 let treatment = null, pre = null, post = null;
+// the lesion as slider-style params: the sliders themselves, or (imported design / custom shape) read from the geometry
+let lesP = null;
 let lockedRange = null;
 let probeFrac = 0.5;
 const controls = new Map(); // key -> {sync()}
@@ -188,7 +190,8 @@ function makeControl(f, container, { primary = false, tag = "", hint = true } = 
     num.value = show(f, params[f.key]);
     // patient mode always uses the territory BC, so its tissue sliders stay live
     const disabled = (f.key === "stiffnessKpa" && params.rigid) || (f.territoryOnly && params.bc === "fixed_flow" && !tag) ||
-      (!tag && CAD_LOCKED.has(f.key) && usesCad(params));
+      (!tag && CAD_LOCKED.has(f.key) && usesCad(params)) ||
+      (!tag && (f.key === "tortuosity" || f.key === "waves") && !usesCad(params) && shapeActive(params.shapeX, 0));
     if (!tag && CAD_LOCKED.has(f.key)) wrap.title = usesCad(params) ? "Set by the imported CAD geometry (CAD import tab)" : "";
     range.disabled = num.disabled = disabled;
     wrap.style.opacity = disabled ? 0.45 : 1;
@@ -226,6 +229,7 @@ function buildControls() {
       makeSegmented(opts, [["diameter", "% diameter"], ["area", "% area"]], "basis");
       opts.firstChild.style.flex = "1";
     }
+    if (f.key === "tortuosity") buildShapeEditor(w);
     if (f.key === "stiffnessKpa") {
       const lab = document.createElement("label");
       lab.className = "check";
@@ -307,8 +311,8 @@ function rebuildControls() {
 function applySection(secId, srcId, extra = {}) {
   const sec = sectionById(secId);
   srcId = sec.sources.some((s) => s.id === srcId) ? srcId : sec.sources[0].id;
-  const keepCad = usesCad(params);
-  params = clampParams({ ...DEFAULTS, bc: params.bc, lesion: params.lesion, ...sectionParams(sec, srcId), source: srcId, ...extra });
+  const keepCad = usesCad(params), keepShape = secId === params.section ? pick(params, ["shapeD", "shapeX"]) : {};
+  params = clampParams({ ...DEFAULTS, bc: params.bc, lesion: params.lesion, ...sectionParams(sec, srcId), source: srcId, ...keepShape, ...extra });
   if (keepCad) params = clampParams({ ...params, ...cadParams(), ...pick(extra, ["occlusionPct", "stenosisLengthMm", "stenosisCenter", "lesion"]) });
   const dev = deviceById(deviceId);
   if (dev && dev.lesion !== params.lesion) { deviceId = null; panelOpen = false; }
@@ -355,7 +359,9 @@ function compute() {
   const dev = deviceById(deviceId);
   try {
     pre = solve(params);
-    treatment = dev ? treat(dev, params, deviceOpts) : null;
+    treatment = dev ? applyDevice(dev, params, deviceOpts) : null;
+    const gl = treatment ? null : geometricLesion(params);
+    lesP = treatment?.lesionPre ?? (gl ? { ...params, ...gl } : params);
     post = treatment ? solve(treatment.post) : null;
     result = post && view === "after" ? post : pre;
     err.hidden = true;
@@ -378,6 +384,7 @@ function compute() {
   renderDevicePanel(dev);
   renderAnatomy();
   renderCad();
+  shapeSummary();
   updateRestoration(dev);
   renderEndpoints(dev);
   renderOxygen();
@@ -434,7 +441,7 @@ function badge(el, cls, text) { el.className = `badge ${cls}`; el.textContent = 
 const logPct = (re) => Math.min(Math.max((Math.log10(Math.max(re, 10)) - 1) / 3, 0), 1) * 100;
 
 function updateResults() {
-  const S = result.summary, p = params, hasSten = p.occlusionPct > 0;
+  const S = result.summary, hasSten = lesP.occlusionPct > 0;
   $("#re-in").textContent = S.Re_inlet.toFixed(0);
   badge($("#re-in-badge"), S.regime_inlet);
   $("#re-throat").textContent = hasSten ? S.Re_throat.toFixed(0) : "—";
@@ -527,7 +534,7 @@ function updateRestoration(dev) {
   badge($("#band"), b.ischemia_band, `after: ${b.ischemia_band.replace("-", " ")}`);
   const gain = b.Q_territory_mL_min - a.Q_territory_mL_min;
   const failed = !dev.balloon && !dev.stent && !deviceOpts.success;
-  const causes = [post.params.occlusionPct > 0 && "the residual narrowing after treatment", params.inletDropMmHg > 0 && "the upstream pressure loss", params.noReflowPct > 0 && `no-reflow in ${params.noReflowPct}% of the microvascular bed`].filter(Boolean);
+  const causes = [treatment.lesionPost.occlusionPct > 0.5 && "the residual narrowing after treatment", params.inletDropMmHg > 0 && "the upstream pressure loss", params.noReflowPct > 0 && `no-reflow in ${params.noReflowPct}% of the microvascular bed`].filter(Boolean);
   const remaining = fb < 99 && !failed && causes.length ? ` The remaining ${(100 - fb).toFixed(0)}% gap comes from ${causes.length > 1 ? `${causes.slice(0, -1).join(", ")} and ${causes.at(-1)}` : causes[0]}.` : "";
   const qz = (q) => (q < 0.0005 ? "0" : qFmt(q));
   const collNote = params.collateralPct > 0 && params.bc === "territory" ? ` Collaterals supply ${qz(a.Q_collateral_mL_min)} mL/min before and ${qz(b.Q_collateral_mL_min)} after: they carry flow only while the vessel's outlet pressure is below normal.` : "";
@@ -610,9 +617,9 @@ function renderOxygen() {
 // ───────────────────────── secondary + safety endpoints ─────────────────────────
 // Lesion span ∪ stent/balloon span (mm); measured at the same positions before and after.
 function treatedSpan() {
-  const L = params.lengthMm, sc = params.stenosisCenter * L, h = params.stenosisLengthMm / 2;
+  const L = lesP.lengthMm, sc = lesP.stenosisCenter * L, h = lesP.stenosisLengthMm / 2;
   let a = null, b = null;
-  if (params.occlusionPct > 0) { a = sc - h; b = sc + h; }
+  if (lesP.occlusionPct > 0) { a = sc - h; b = sc + h; }
   const o = treatment?.overlay;
   const span = o?.type === "stent" ? [o.startMm, o.endMm] : o?.type === "balloon" ? [o.centerMm - o.lengthMm / 2, o.centerMm + o.lengthMm / 2] : null;
   if (span) { a = a == null ? span[0] : Math.min(a, span[0]); b = b == null ? span[1] : Math.max(b, span[1]); }
@@ -710,17 +717,17 @@ function renderEndpoints(dev) {
 
   // flags
   const flags = [];
-  const areaPost = treatment ? 100 * (1 - throatRatio(treatment.post) ** 2) : null;
-  if ((params.occlusionPct > 0 || pre.geom.lesion) && a.area_stenosis_pct >= 50)
+  const areaPost = treatment ? 100 * (1 - throatRatio(treatment.lesionPost) ** 2) : null;
+  if (lesP.occlusionPct > 0 && a.area_stenosis_pct >= 50)
     flags.push(["warn", `Before: a ${areaTxt(a.area_stenosis_pct)}%-area stenosis. Separation and recirculation (stagnation) are likely just downstream of the throat. Not resolved here; confirm with 3D CFD.`]);
-  if (treatment && treatment.post.occlusionPct > 0 && areaPost >= 50)
+  if (treatment && treatment.lesionPost.occlusionPct > 0 && areaPost >= 50)
     flags.push(["warn", `After: ${areaTxt(areaPost)}% area stenosis remains, so post-stenotic separation is still likely.`]);
   if (params.bulbPct >= 15) flags.push(["warn", `The ${params.bulbPct}% bulb dilation favors flow separation and low, oscillating shear on its outer wall, which this model cannot resolve.`]);
   if ((b ?? a).wss_max > HIGH_WSS_PA) flags.push(["warn", `Shear above ${HIGH_WSS_PA} Pa over ${n(b ? hiB : hiA, 1)} mm${b ? " after treatment" : ""}: a screening level for platelet activation in stenotic jets.`]);
   if (hasBr) {
-    const s0 = params.stenosisCenter * params.lengthMm - params.stenosisLengthMm / 2, s1 = s0 + params.stenosisLengthMm;
+    const s0 = lesP.stenosisCenter * lesP.lengthMm - lesP.stenosisLengthMm / 2, s1 = s0 + lesP.stenosisLengthMm;
     const origins = pre.geom.branchIdx.map((i) => pre.geom.s[i] * 1e3);
-    const inPlaque = params.occlusionPct > 0 ? origins.filter((x) => x >= s0 && x <= s1).length : 0;
+    const inPlaque = lesP.occlusionPct > 0 ? origins.filter((x) => x >= s0 && x <= s1).length : 0;
     if (inPlaque) flags.push(["warn", `${inPlaque} perforator origin${inPlaque > 1 ? "s lie" : " lies"} within the ${params.lesion === "thrombus" ? "clot" : "plaque"}. Origin narrowing itself is not modeled, only the pressure there.`]);
     if (dev?.stent && treatment) {
       const o = treatment.overlay, jailed = origins.filter((x) => x >= o.startMm && x <= o.endMm).length;
@@ -834,12 +841,12 @@ function sceneExtras(dev) {
 }
 
 function lesionExtras(dev) {
-  const lesionBefore = params.occlusionPct > 0 ? params.lesion : null;
+  const lesionBefore = lesP.occlusionPct > 0 ? params.lesion : null;
   if (!dev || !treatment || view === "before") return { lesion: lesionBefore };
   if (view === "inplace") return { lesion: lesionBefore, overlay: treatment.overlay };
   // after: thrombectomy leaves only the underlying plaque; a failed pass leaves the clot
   const failed = !dev.balloon && !dev.stent && !deviceOpts.success;
-  const lesionAfter = treatment.post.occlusionPct > 0 ? (failed ? params.lesion : "icas") : null;
+  const lesionAfter = treatment.lesionPost.occlusionPct > 0 ? (failed ? params.lesion : "icas") : null;
   return { lesion: lesionAfter, overlay: dev.stent ? treatment.overlay : null };
 }
 
@@ -1075,7 +1082,7 @@ function computeSensitivity() {
   const evalY = (p, n) => {
     const a = solve(p, n).summary;
     if (!y.post) return y.get(a);
-    return y.get(a, solve(treat(dev, p, deviceOpts).post, n).summary);
+    return y.get(a, solve(applyDevice(dev, p, deviceOpts).post, n).summary);
   };
   for (let k = 0; k < N; k++) {
     const t = k / (N - 1);
@@ -1118,7 +1125,7 @@ function buildPresets() {
     }
     const v = sel.value; requestAnimationFrame(() => (sel.value = v));
   });
-  $("#reset").addEventListener("click", () => { sel.value = "s:m1:-1"; sel.dispatchEvent(new Event("change")); });
+  $("#reset").addEventListener("click", () => { params = { ...params, shapeD: "", shapeX: "" }; sel.value = "s:m1:-1"; sel.dispatchEvent(new Event("change")); });
 }
 
 function readHash() {
@@ -1379,6 +1386,126 @@ function wirePatient() {
   $("#pt-color")?.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { ptColor = b.dataset.value; renderPatient(); } });
   $("#pt-table")?.addEventListener("click", (e) => { const r = e.target.closest("tr[data-key]"); if (r) { ptVariant = r.dataset.key; renderPatient(); } });
   $("#pt-oxygen")?.addEventListener("click", (e) => { const r = e.target.closest("tr[data-key]"); if (r) { ptVariant = r.dataset.key; renderPatient(); } });
+}
+
+// ───────────────────────── shape editor (custom parametric geometry) ─────────────────────────
+// Two drag-to-edit curves under the Tortuosity slider: the lumen diameter along the vessel (% of the healthy
+// diameter set by the sliders) and the centerline seen from above (sideways offset, mm). Stored as
+// params.shapeD / shapeX ("u:v,…"), so they go in shared links; the engine reads the lesion from the shape.
+const SHAPE_PRESETS = [
+  ["Uniform", { shapeD: "" }],
+  ["Fusiform aneurysm", { shapeD: "0:1,0.3:1,0.5:1.8,0.7:1,1:1" }],
+  ["Long narrowing", { shapeD: "0:1,0.22:1,0.35:0.5,0.6:0.5,0.73:1,1:1" }],
+  ["Tandem stenoses", { shapeD: "0:1,0.22:1,0.3:0.45,0.38:1,0.62:1,0.7:0.6,0.78:1,1:1" }],
+  ["Straight", { shapeX: "" }],
+  ["C-bend", { shapeX: "0:0,0.5:0.2,1:0" }],
+  ["S-bend", { shapeX: "0:0,0.25:0.12,0.75:-0.12,1:0" }],
+  ["Kink", { shapeX: "0:0,0.4:0.02,0.5:0.13,0.6:0.02,1:0" }],
+];
+
+function buildShapeEditor(host) {
+  const box = document.createElement("details");
+  box.className = "shape-edit";
+  box.open = !!(params.shapeD || params.shapeX) && !usesCad(params);
+  box.innerHTML = `<summary>Customize shape <span class="muted" id="shape-sum"></span></summary>
+    <p class="hint">Drag a point to reshape. Double-click the curve to add a point, double-click a point to remove it.
+      Narrowings you draw are treated as the lesion (devices act on them); the reference for flow % stays the straight, uniform vessel.</p>
+    <div class="shape-lab">Lumen diameter, % of healthy</div>
+    <canvas class="shape-cv" id="shape-d"></canvas>
+    <div class="shape-lab">Centerline from above, sideways offset (mm)</div>
+    <canvas class="shape-cv" id="shape-x"></canvas>
+    <div class="shape-presets">${SHAPE_PRESETS.map(([l], i) => `<button class="btn ghost small" data-i="${i}">${l}</button>`).join("")}</div>`;
+  host.appendChild(box);
+  const eds = [
+    curveEditor(box.querySelector("#shape-d"), "shapeD", { flat: 1, lo: 0.05, hi: 2, toY: (v) => v * 100, unit: "%", lockEnds: false }),
+    curveEditor(box.querySelector("#shape-x"), "shapeX", { flat: 0, lo: -0.3, hi: 0.3, toY: (v) => v * params.lengthMm, unit: "mm", lockEnds: true }),
+  ];
+  box.addEventListener("toggle", () => eds.forEach((e) => e.draw()));
+  box.querySelector(".shape-presets").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-i]");
+    if (!b) return;
+    const [, patch] = SHAPE_PRESETS[+b.dataset.i];
+    for (const [k, v] of Object.entries(patch)) set(k, v);
+  });
+  controls.set("shape-edit", { sync: () => {
+    box.hidden = usesCad(params);
+    eds.forEach((e) => e.draw());
+    shapeSummary();
+  } });
+}
+
+function shapeSummary() {
+  const sum = $("#shape-sum");
+  if (!sum) return;
+  const parts = [shapeActive(params.shapeD, 1) && "diameter", shapeActive(params.shapeX, 0) && "centerline"].filter(Boolean);
+  const ti = shapeActive(params.shapeX, 0) && pre?.geom?.chord ? ` (tortuosity ${(pre.geom.s.at(-1) / pre.geom.chord).toFixed(2)})` : "";
+  sum.textContent = parts.length ? `· custom ${parts.join(" + ")}${ti}` : "";
+}
+
+function curveEditor(cv, key, o) {
+  const ctx = cv.getContext("2d"), PAD = { l: 34, r: 8, t: 8, b: 16 };
+  const pts = () => parseShape(params[key]) ?? [0, 0.25, 0.5, 0.75, 1].map((u) => [u, o.flat]);
+  let drag = null, cur = null;
+  const box = () => ({ w: cv.clientWidth, h: cv.clientHeight });
+  const X = (u) => PAD.l + u * (box().w - PAD.l - PAD.r), Y = (v) => PAD.t + (1 - (v - o.lo) / (o.hi - o.lo)) * (box().h - PAD.t - PAD.b);
+  const U = (x) => (x - PAD.l) / (box().w - PAD.l - PAD.r), V = (y) => o.lo + (1 - (y - PAD.t) / (box().h - PAD.t - PAD.b)) * (o.hi - o.lo);
+  const commit = (p) => {
+    const flat = p.every(([, v]) => Math.abs(v - o.flat) < 1e-3);
+    set(key, flat ? "" : formatShape(p));
+  };
+  const draw = () => {
+    const { w, h } = box();
+    if (!w || !h) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.font = "10px Inter, sans-serif"; ctx.fillStyle = "#8a97a8"; ctx.textBaseline = "middle";
+    for (const v of [o.lo < 0 ? o.lo : 0, o.flat, o.hi]) {
+      ctx.strokeStyle = v === o.flat ? "#3a4658" : "#222b37"; ctx.setLineDash(v === o.flat ? [4, 3] : []);
+      ctx.beginPath(); ctx.moveTo(PAD.l, Y(v)); ctx.lineTo(w - PAD.r, Y(v)); ctx.stroke();
+      ctx.textAlign = "right"; ctx.fillText(`${+o.toY(v).toFixed(o.unit === "%" ? 0 : 1)}`, PAD.l - 4, Y(v));
+    }
+    ctx.setLineDash([]); ctx.textAlign = "left"; ctx.fillText("inlet", PAD.l, h - 6);
+    ctx.textAlign = "right"; ctx.fillText(`outlet · ${+params.lengthMm.toFixed(1)} mm`, w - PAD.r, h - 6);
+    const p = cur ?? pts(), f = shapeCurve(p);
+    ctx.strokeStyle = "#4cc2ff"; ctx.lineWidth = 2; ctx.beginPath();
+    for (let i = 0; i <= 120; i++) { const u = i / 120, y = Y(Math.min(Math.max(f(u), o.lo), o.hi)); i ? ctx.lineTo(X(u), y) : ctx.moveTo(X(u), y); }
+    ctx.stroke(); ctx.lineWidth = 1;
+    p.forEach(([u, v], i) => {
+      ctx.fillStyle = drag === i ? "#ffffff" : o.lockEnds && (i === 0 || i === p.length - 1) ? "#3a4658" : "#4cc2ff";
+      ctx.beginPath(); ctx.arc(X(u), Y(v), 4.5, 0, 2 * Math.PI); ctx.fill();
+    });
+  };
+  const local = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  const nearest = (p, x, y) => { let k = -1, d = 12; p.forEach(([u, v], i) => { const dd = Math.hypot(X(u) - x, Y(v) - y); if (dd < d) { d = dd; k = i; } }); return k; };
+  cv.addEventListener("pointerdown", (e) => {
+    const p = pts(), [x, y] = local(e), k = nearest(p, x, y);
+    if (k < 0 || (o.lockEnds && (k === 0 || k === p.length - 1))) return;
+    drag = k; cur = p; cv.setPointerCapture(e.pointerId); draw();
+  });
+  cv.addEventListener("pointermove", (e) => {
+    if (drag == null) return;
+    const [x, y] = local(e), p = cur.map((q) => [...q]), last = p.length - 1;
+    const v = Math.min(Math.max(V(y), o.lo), o.hi);
+    const u = drag === 0 ? 0 : drag === last ? 1 : Math.min(Math.max(U(x), p[drag - 1][0] + 0.02), p[drag + 1][0] - 0.02);
+    p[drag] = [u, v]; cur = p;
+    commit(p);
+  });
+  const end = () => { if (drag == null) return; drag = null; cur = null; draw(); };
+  cv.addEventListener("pointerup", end);
+  cv.addEventListener("pointercancel", end);
+  cv.addEventListener("dblclick", (e) => {
+    const p = pts(), [x, y] = local(e), k = nearest(p, x, y);
+    if (k > 0 && k < p.length - 1) { p.splice(k, 1); commit(p); return; }
+    if (k >= 0) return;
+    const u = Math.min(Math.max(U(x), 0.01), 0.99);
+    if (p.some(([pu]) => Math.abs(pu - u) < 0.02)) return;
+    p.push([u, shapeCurve(p)(u)]); p.sort((a, b) => a[0] - b[0]);
+    commit(p);
+  });
+  new ResizeObserver(draw).observe(cv);
+  return { draw };
 }
 
 // ───────────────────────── CAD import ─────────────────────────
